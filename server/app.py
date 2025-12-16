@@ -37,6 +37,15 @@ def init_db():
     conn.commit()
     conn.close()
 
+def get_cached_word(word: str) -> str:
+    """Retrieve a cached emoji for a word from the database"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT result, emoji FROM word_cache WHERE result = ?', (word,))
+    result = cursor.fetchone()
+    conn.close()
+    return result['emoji'] if result else None
+
 def get_cached_combination(first_word: str, second_word: str) -> dict:
     """
     Retrieve a cached combination from the database.
@@ -93,8 +102,13 @@ def craft_new_word(first_word: str, second_word: str) -> dict:
     
     # Generate new combination
     combination = generate_combination(first_word, second_word)
-    
+
+    #check if generated combination was made another way, if so return that
     if combination and combination['result']:
+        cached = get_cached_word(combination['result'])
+        if cached:
+            return {'result': combination['result'], 'emoji': cached}
+        
         # Cache the result
         cache_combination(first_word, second_word, combination['result'], combination['emoji'])
         return combination
