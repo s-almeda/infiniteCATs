@@ -30,7 +30,9 @@ const [, drop] = useDrop(() => ({
         removeBox(droppedId);
       }
       store.boxes[props.id].loading = true
-      const response = await axios.post('http://127.0.0.1:3000/', {
+      //GRAB THE VITE_FLASK_API_URL from env variables
+      const apiUrl = import.meta.env.VITE_FLASK_API_URL || 'http://localhost:3000'
+      const response = await axios.post(`${apiUrl}/`, {
         first: store.boxes[props.id].title,
         second: secondTitle
       })
