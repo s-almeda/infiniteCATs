@@ -1,5 +1,7 @@
-from dataclasses import dataclass
+from dataclasses import dataclass as std_dataclass
+from pydantic.dataclasses import dataclass
 from typing import List
+
 
 @dataclass
 class Material:
@@ -8,7 +10,8 @@ class Material:
     emoji: str
     
     def to_dict(self):
-        return {"name": self.name, "emoji": self.emoji}
+        # Align with API contract expected by frontend/backend cache
+        return {"result": self.name, "emoji": self.emoji}
     
     def __eq__(self, other):
         if isinstance(other, Material):
@@ -19,7 +22,7 @@ class Material:
         return hash(self.name.lower())
 
 
-@dataclass
+@std_dataclass
 class Recipe:
     """Represents a recipe/combination of materials"""
     material_list: List[str]
