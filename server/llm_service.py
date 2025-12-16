@@ -123,9 +123,11 @@ def generate_combination(first_word: str, second_word: str) -> Optional[dict]:
         #     'emoji': emoji
         # }
         
-    except json.JSONDecodeError:
-        print(f"Failed to parse JSON response for {first_word} + {second_word}")
+    except json.JSONDecodeError as e:
+        print(f"Failed to parse JSON response for {first_word} + {second_word}: {e}")
         return None
     except Exception as e:
-        print(f"Error generating combination: {e}")
+        print(f"Error generating combination for {first_word} + {second_word}: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
         return None
