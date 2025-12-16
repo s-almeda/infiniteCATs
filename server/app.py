@@ -10,7 +10,7 @@ from models import Material
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins=["https://infinitecat.vercel.app", "https://cats.snailbunny.site", "http://localhost:5173"])
 
 # Database setup
 DB_PATH = os.path.join(os.path.dirname(__file__), 'cache.db')
