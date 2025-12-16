@@ -1,5 +1,14 @@
+<!--
+  Container.vue
+  
+  Main game container holding the canvas and resources panel.
+  Manages the drag-and-drop zone and canvas state (boxes/items).
+  Left side: 75% - draggable canvas for combining elements
+  Right side: 25% - Resources panel showing discovered elements
+-->
+
 <script lang="ts" setup>
-import {useDrop, XYCoord} from 'vue3-dnd'
+import {useDrop, type XYCoord} from 'vue3-dnd'
 import {ItemTypes} from './ItemTypes'
 import Box from './Box.vue'
 import type {DragItem} from './interfaces'
