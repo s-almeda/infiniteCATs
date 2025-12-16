@@ -13,7 +13,8 @@ from models import Material
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'cache.db')
 # MODEL = 'llama3.2:latest'
-MODEL = 'mistral:7b-instruct-q4_K_M'
+MODEL = 'neural-chat:latest'
+#MODEL = 'mistral:7b-instruct-q4_K_M'
 # MODEL = 'hf.co/TheBloke/Mistral-7B-Instruct-v0.1-GGUF:Q4_K_M'
 
 def check_common_material_errors(material: Material) -> str:
