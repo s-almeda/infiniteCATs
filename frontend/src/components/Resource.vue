@@ -42,7 +42,7 @@ const handleClick = () => {
       data-testid="box"
       @click="handleClick"
   >
-    <ItemCard :title="title" :emoji="emoji"></ItemCard>
+    <ItemCard id="resource-item" size="small" :title="title" :emoji="emoji"></ItemCard>
   </div>
 </template>
 
