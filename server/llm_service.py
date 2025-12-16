@@ -70,7 +70,7 @@ def generate_combination(first_word: str, second_word: str) -> Optional[dict]:
         schema = TypeAdapter(Material).json_schema()
 
         response = ollama.chat(
-            model='tinyllama:latest',
+            model='phi:latest',
             format=schema,
             messages = primer_messages + [
                 {
