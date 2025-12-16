@@ -37,8 +37,17 @@ def init_db():
     conn.commit()
     conn.close()
 
-def get_cached_word(word: str) -> str:
+def get_emoji_by_word(word: str) -> str:
     """Retrieve a cached emoji for a word from the database"""
+    # special case for Fire, Water, Earth, Air
+    special_emojis = {
+        'Fire': '🔥',
+        'Water': '💧',
+        'Earth': '🌍',
+        'Air': '💨'
+    }
+    if word in special_emojis:
+        return special_emojis[word]
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute('SELECT result, emoji FROM word_cache WHERE result = ?', (word,))
@@ -105,7 +114,7 @@ def craft_new_word(first_word: str, second_word: str) -> dict:
 
     #check if generated combination was made another way, if so return that
     if combination and combination['result']:
-        cached = get_cached_word(combination['result'])
+        cached = get_emoji_by_word(combination['result'])
         if cached:
             return {'result': combination['result'], 'emoji': cached}
         
