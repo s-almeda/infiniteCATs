@@ -20,12 +20,12 @@ import {storeToRefs} from "pinia";
 
 const store = useBoxesStore()
 const { boxes } = store
-const moveBox = (id: string, left: number, top: number, title?: string, emoji?: string) => {
+const moveBox = (id: string | null, left: number, top: number, title?: string, emoji?: string) => {
   if (id) {
     Object.assign(boxes[id], {left, top})
   } else {
     const key = Math.random().toString(36).substring(7);
-    boxes[key] = {top, left, title, emoji}
+    boxes[key] = {top, left, title: title || '', emoji: emoji || ''}
     console.log(boxes)
 
   }
@@ -46,8 +46,8 @@ const [, drop] = useDrop(() => ({
     } else {
       const delta = monitor.getClientOffset() as XYCoord
       // current mouse position relative to drop
-      const containerCoords = containerElement.value.getBoundingClientRect()
-      if(delta && delta.x && delta.y){
+      const containerCoords = containerElement.value?.getBoundingClientRect()
+      if(delta && delta.x && delta.y && containerCoords){
         const left = Math.round(delta.x - containerCoords.left - 40)
         const top = Math.round(delta.y - containerCoords.top - 15)
         moveBox(null, left, top, item.title, item.emoji)
@@ -66,13 +66,13 @@ const [, drop] = useDrop(() => ({
         <div :ref="drop" class="container">
           <Box
               v-for="(value, key) in boxes"
-              :id="key"
+              :id="String(key)"
               :key="key"
               :left="value.left"
               :top="value.top"
               :loading="value.loading"
           >
-            <ItemCard size="large" :id="key" :title="value.title" :emoji="value.emoji"/>
+            <ItemCard size="large" :id="String(key)" :title="value.title" :emoji="value.emoji"/>
           </Box>
         </div>
       </div>
