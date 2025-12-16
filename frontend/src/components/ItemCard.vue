@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {useDrop} from "vue3-dnd";
 import {ItemTypes} from "@/components/ItemTypes";
-import {DragItem} from "@/components/interfaces";
+import type { DragItem } from "@/components/interfaces";
 import {useBoxesStore} from "@/stores/useBoxesStore";
 import axios from "axios";
 import {useResourcesStore} from "@/stores/useResourcesStore";
