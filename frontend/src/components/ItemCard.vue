@@ -18,7 +18,7 @@ const props = defineProps<{
 const store = useBoxesStore()
 const {removeBox, addBox} = store
 const {resources} = storeToRefs(useResourcesStore())
-const {addResource} =useResourcesStore()
+const {addResource, triggerCombinationEvent} = useResourcesStore()
 
 const [, drop] = useDrop(() => ({
   accept: ItemTypes.BOX,
@@ -53,6 +53,7 @@ const [, drop] = useDrop(() => ({
         })
       }
       removeBox(props.id);
+      triggerCombinationEvent();
     }
   },
 }))

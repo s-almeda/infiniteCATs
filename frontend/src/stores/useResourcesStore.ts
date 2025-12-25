@@ -15,9 +15,16 @@ export const useResourcesStore = defineStore('resources', () => {
                 {title: 'Earth', emoji: '🌍'},
                 {title: 'Air', emoji: '💨'},
             ]);
+    
+    const combinationCount = ref(0);
+    
     function addResource(box: ResourceStoreEntry) {
         resources.value.push(box)
     }
+    
+    function triggerCombinationEvent() {
+        combinationCount.value++;
+    }
 
-    return { resources, addResource}
+    return { resources, addResource, combinationCount, triggerCombinationEvent }
 })

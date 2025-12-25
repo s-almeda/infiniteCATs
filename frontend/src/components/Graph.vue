@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, onBeforeUnmount, ref } from "vue";
+import { onMounted, onBeforeUnmount, ref, watch } from "vue";
 import {
   forceSimulation,
   forceLink,
@@ -7,8 +7,12 @@ import {
   forceCenter
 } from "d3-force";
 import { useBoxesStore } from "@/stores/useBoxesStore";
+import { useResourcesStore } from "@/stores/useResourcesStore";
+import { storeToRefs } from "pinia";
 
 const boxStore = useBoxesStore();
+const resourceStore = useResourcesStore();
+const { combinationCount } = storeToRefs(resourceStore);
 const canvas = ref(null);
 let simulation;
 let ctx;
@@ -182,11 +186,8 @@ function onMouseLeave() {
   hoverNode.value = null;
 }
 
-// Quick visibility to confirm the component is evaluated
-console.log("Graph component module loaded");
-
-onMounted(async () => {
-  console.log("Mounting Graph component and loading data...");
+async function loadGraphData() {
+  console.log("Loading graph data...");
   try {
     const res = await fetch("http://localhost:3000/api/graph");
     if (!res.ok) {
@@ -200,7 +201,6 @@ onMounted(async () => {
     storedNodes.value = nodes;
 
     // Turn each combination link into linear links by adding a combination node
-    // Links now have: { from, to, target } where from and to are two inputs
     const expandedNodes = [...nodes];
     const expandedLinks = [];
     let combinationNodeId = 0;
@@ -235,6 +235,11 @@ onMounted(async () => {
     const normalizedLinks = expandedLinks;
     storedNodes.value = expandedNodes;
 
+    // Stop existing simulation if it exists
+    if (simulation) {
+      simulation.stop();
+    }
+
     ctx = canvas.value.getContext("2d");
 
     simulation = forceSimulation(expandedNodes)
@@ -257,6 +262,20 @@ onMounted(async () => {
   } catch (error) {
     console.error("Error loading graph:", error);
   }
+}
+
+// Quick visibility to confirm the component is evaluated
+console.log("Graph component module loaded");
+
+onMounted(async () => {
+  console.log("Mounting Graph component and loading data...");
+  await loadGraphData();
+});
+
+// Watch for combination events and reload graph
+watch(combinationCount, () => {
+  console.log("Combination detected, reloading graph...");
+  loadGraphData();
 });
 
 onBeforeUnmount(() => {
