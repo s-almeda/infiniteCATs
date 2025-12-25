@@ -6,7 +6,9 @@ import {
   forceManyBody,
   forceCenter
 } from "d3-force";
+import { useBoxesStore } from "@/stores/useBoxesStore";
 
+const boxStore = useBoxesStore();
 const canvas = ref(null);
 let simulation;
 let ctx;
@@ -18,6 +20,7 @@ const storedNodes = ref([]);
 const hoverNode = ref(null);
 const hoverPos = ref({ x: 0, y: 0 });
 const draggingNode = ref(null);
+const dragStartPos = ref({ x: 0, y: 0 });
 
 function draw(nodes, links) {
   ctx.clearRect(0, 0, width.value, height.value);
@@ -108,11 +111,36 @@ function onMouseMove(event) {
   hoverNode.value = hit ? hit.label || hit.id || hit.name : null;
 }
 
+function handleNodeClick(node) {
+  // Only add non-combination nodes to canvas
+  if (node.type === "combination") return;
+
+  // Get container dimensions for centering
+  const containerWidth = window.innerWidth * 0.75;
+  const containerHeight = window.innerHeight * 0.9;
+
+  // Calculate center position
+  const centerX = containerWidth / 2 - 40;
+  const centerY = containerHeight / 2 - 15;
+
+  // Add random offset (±100px)
+  const randomOffsetX = (Math.random() - 0.5) * 200;
+  const randomOffsetY = (Math.random() - 0.5) * 200;
+
+  const finalX = Math.round(centerX + randomOffsetX);
+  const finalY = Math.round(centerY + randomOffsetY);
+
+  // Add to canvas
+  const key = Math.random().toString(36).substring(7);
+  boxStore.boxes[key] = { top: finalY, left: finalX, title: node.label || node.id, emoji: node.emoji };
+}
+
 function onMouseDown(event) {
   if (!storedNodes.value.length) return;
   const rect = canvas.value.getBoundingClientRect();
   const x = event.clientX - rect.left;
   const y = event.clientY - rect.top;
+  dragStartPos.value = { x, y };
 
   const hit = storedNodes.value.find(n => {
     const dx = n.x - x;
@@ -128,8 +156,21 @@ function onMouseDown(event) {
   }
 }
 
-function onMouseUp() {
+function onMouseUp(event) {
   if (draggingNode.value) {
+    // Calculate distance moved
+    const rect = canvas.value.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    const dx = x - dragStartPos.value.x;
+    const dy = y - dragStartPos.value.y;
+    const distance = Math.hypot(dx, dy);
+
+    // If movement is minimal, treat as click
+    if (distance < 5) {
+      handleNodeClick(draggingNode.value);
+    }
+
     draggingNode.value.fx = null;
     draggingNode.value.fy = null;
     draggingNode.value = null;
