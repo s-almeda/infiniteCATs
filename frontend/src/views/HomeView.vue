@@ -4,8 +4,10 @@ import ItemCard from "@/components/ItemCard.vue";
 import Resource from "@/components/Resource.vue";
 import AvaliableResources from "@/components/AvailableResources.vue";
 import Container from "@/components/Container.vue";
+import Graph from "@/components/Graph.vue";
 </script>
 
 <template>
   <Example></Example>
+  <Graph></Graph>
 </template>
