@@ -18,7 +18,7 @@ let simulation;
 let ctx;
 let animationFrame;
 
-const width = ref(800);
+const width = ref(window.innerWidth - 40);
 const height = ref(600);
 const storedNodes = ref([]);
 const hoverNode = ref(null);
@@ -269,7 +269,18 @@ console.log("Graph component module loaded");
 
 onMounted(async () => {
   console.log("Mounting Graph component and loading data...");
+  
+  // Handle window resize
+  const handleResize = () => {
+    width.value = window.innerWidth - 40;
+  };
+  window.addEventListener('resize', handleResize);
+  
   await loadGraphData();
+  
+  return () => {
+    window.removeEventListener('resize', handleResize);
+  };
 });
 
 // Watch for combination events and reload graph
