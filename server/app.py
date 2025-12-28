@@ -127,6 +127,54 @@ def craft_new_word(first_word: str, second_word: str) -> dict:
     # Return empty result if generation failed
     return {'result': '', 'emoji': ''}
 
+def get_nodes_and_edges():
+    """Retrieve all nodes and edges for graph visualization"""
+    print("Fetching graph data from database...")
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT first_word, second_word, result, emoji FROM word_cache')
+    rows = cursor.fetchall()
+    conn.close()
+
+    nodes = {}
+    edges = []
+    
+    # Add special base nodes that may not appear in cache
+    special_nodes = {
+        'Fire': '🔥',
+        'Water': '💧',
+        'Earth': '🌍',
+        'Air': '💨'
+    }
+    for node_name, emoji in special_nodes.items():
+        nodes[node_name] = {'id': node_name, 'label': node_name, 'emoji': emoji}
+    
+    for row in rows:
+        first_word = row['first_word']
+        second_word = row['second_word']
+        result = row['result']
+        emoji = row['emoji']
+        
+        # Add nodes
+        if first_word not in nodes:
+            nodes[first_word] = {'id': first_word, 'label': first_word, 'emoji': get_emoji_by_word(first_word)}
+        if second_word not in nodes:
+            nodes[second_word] = {'id': second_word, 'label': second_word, 'emoji': get_emoji_by_word(second_word)}
+        if result not in nodes:
+            nodes[result] = {'id': result, 'label': result, 'emoji': emoji}
+        
+        # Add edge
+        # edges.append({'from': first_word, 'to': result})
+        # edges.append({'from': second_word, 'to': result})
+        edges.append({'from1': first_word, 'from2': second_word, 'to': result})
+    print(f"Fetched {len(nodes)} nodes and {len(edges)} edges.")
+    return list(nodes.values()), edges
+
+@app.route('/api/graph', methods=['GET'])
+def get_graph_data():
+    nodes, edges = get_nodes_and_edges()
+    return jsonify({'nodes': nodes, 'links': edges})
+
 @app.route('/', methods=['GET'])
 def get_default_combinations():
     """Get the 6 default element combinations"""
