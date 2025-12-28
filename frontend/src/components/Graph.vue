@@ -25,9 +25,24 @@ const hoverNode = ref(null);
 const hoverPos = ref({ x: 0, y: 0 });
 const draggingNode = ref(null);
 const dragStartPos = ref({ x: 0, y: 0 });
+const zoomLevel = ref(1);
+const panX = ref(0);
+const panY = ref(0);
+let expandedNodes = [];
+let expandedLinks = [];
+let isPanning = false;
+let panStartX = 0;
+let panStartY = 0;
 
 function draw(nodes, links) {
   ctx.clearRect(0, 0, width.value, height.value);
+  
+  // Apply zoom and pan translation
+  ctx.save();
+  ctx.translate(panX.value, panY.value);
+  ctx.translate(width.value / 2, height.value / 2);
+  ctx.scale(zoomLevel.value, zoomLevel.value);
+  ctx.translate(-width.value / 2, -height.value / 2);
 
   // links
   ctx.strokeStyle = "#888";
@@ -90,14 +105,55 @@ function draw(nodes, links) {
       ctx.fillText(emoji, n.x, n.y - 14);
     }
   });
+  
+  ctx.restore();
+}
+
+function screenToCanvasCoords(screenX, screenY) {
+  // Convert screen coordinates to canvas coordinates accounting for zoom and pan
+  // Reverse the transformations applied in draw()
+  const centerX = width.value / 2;
+  const centerY = height.value / 2;
+  
+  // Remove pan translation
+  let x = screenX - panX.value;
+  let y = screenY - panY.value;
+  
+  // Translate back from center
+  x -= centerX;
+  y -= centerY;
+  
+  // Unscale by zoom
+  x /= zoomLevel.value;
+  y /= zoomLevel.value;
+  
+  // Translate back
+  x += centerX;
+  y += centerY;
+  
+  return { x, y };
 }
 
 function onMouseMove(event) {
   if (!storedNodes.value.length) return;
   const rect = canvas.value.getBoundingClientRect();
-  const x = event.clientX - rect.left;
-  const y = event.clientY - rect.top;
-  hoverPos.value = { x, y };
+  const screenX = event.clientX - rect.left;
+  const screenY = event.clientY - rect.top;
+  
+  hoverPos.value = { x: screenX, y: screenY };
+  
+  // Handle panning
+  if (isPanning) {
+    const deltaX = screenX - panStartX;
+    const deltaY = screenY - panStartY;
+    panX.value += deltaX;
+    panY.value += deltaY;
+    panStartX = screenX;
+    panStartY = screenY;
+    return;
+  }
+  
+  const { x, y } = screenToCanvasCoords(screenX, screenY);
 
   if (draggingNode.value) {
     draggingNode.value.fx = x;
@@ -142,9 +198,19 @@ function handleNodeClick(node) {
 function onMouseDown(event) {
   if (!storedNodes.value.length) return;
   const rect = canvas.value.getBoundingClientRect();
-  const x = event.clientX - rect.left;
-  const y = event.clientY - rect.top;
-  dragStartPos.value = { x, y };
+  const screenX = event.clientX - rect.left;
+  const screenY = event.clientY - rect.top;
+  
+  // Handle panning with middle mouse button or right-click
+  if (event.button === 1 || event.button === 2) {
+    isPanning = true;
+    panStartX = screenX;
+    panStartY = screenY;
+    return;
+  }
+  
+  const { x, y } = screenToCanvasCoords(screenX, screenY);
+  dragStartPos.value = { x: screenX, y: screenY };
 
   const hit = storedNodes.value.find(n => {
     const dx = n.x - x;
@@ -161,13 +227,15 @@ function onMouseDown(event) {
 }
 
 function onMouseUp(event) {
+  isPanning = false;
+  
   if (draggingNode.value) {
-    // Calculate distance moved
+    // Calculate distance moved (in screen coordinates)
     const rect = canvas.value.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    const dx = x - dragStartPos.value.x;
-    const dy = y - dragStartPos.value.y;
+    const screenX = event.clientX - rect.left;
+    const screenY = event.clientY - rect.top;
+    const dx = screenX - dragStartPos.value.x;
+    const dy = screenY - dragStartPos.value.y;
     const distance = Math.hypot(dx, dy);
 
     // If movement is minimal, treat as click
@@ -186,6 +254,27 @@ function onMouseLeave() {
   hoverNode.value = null;
 }
 
+function onWheel(event) {
+  event.preventDefault();
+  const zoomSpeed = 0.1;
+  const direction = event.deltaY > 0 ? -1 : 1;
+  zoomLevel.value = Math.max(0.5, Math.min(3, zoomLevel.value + direction * zoomSpeed));
+}
+
+function zoomIn() {
+  zoomLevel.value = Math.min(3, zoomLevel.value + 0.2);
+}
+
+function zoomOut() {
+  zoomLevel.value = Math.max(0.5, zoomLevel.value - 0.2);
+}
+
+function resetZoom() {
+  zoomLevel.value = 1;
+  panX.value = 0;
+  panY.value = 0;
+}
+
 async function loadGraphData() {
   console.log("Loading graph data...");
   try {
@@ -201,8 +290,8 @@ async function loadGraphData() {
     storedNodes.value = nodes;
 
     // Turn each combination link into linear links by adding a combination node
-    const expandedNodes = [...nodes];
-    const expandedLinks = [];
+    expandedNodes = [...nodes];
+    expandedLinks = [];
     let combinationNodeId = 0;
 
     links.forEach(l => {
@@ -289,6 +378,20 @@ watch(combinationCount, () => {
   loadGraphData();
 });
 
+// Watch zoom level and redraw
+watch(zoomLevel, () => {
+  if (simulation && expandedNodes.length > 0) {
+    draw(expandedNodes, expandedLinks);
+  }
+});
+
+// Watch pan and redraw
+watch([panX, panY], () => {
+  if (simulation && expandedNodes.length > 0) {
+    draw(expandedNodes, expandedLinks);
+  }
+});
+
 onBeforeUnmount(() => {
   simulation?.stop();
   cancelAnimationFrame(animationFrame);
@@ -302,6 +405,8 @@ onBeforeUnmount(() => {
     @mouseleave="onMouseLeave"
     @mousedown="onMouseDown"
     @mouseup="onMouseUp"
+    @wheel="onWheel"
+    @contextmenu.prevent
   >
     <canvas
       ref="canvas"
@@ -313,6 +418,11 @@ onBeforeUnmount(() => {
       class="absolute bg-white border border-gray-300 rounded px-2 py-1 text-sm shadow"
       :style="{ left: `${hoverPos.x + 10}px`, top: `${hoverPos.y + 10}px` }">
       {{ hoverNode }}
+    </div>
+    <div class="absolute top-2 right-2 flex gap-2">
+      <button @click="zoomIn" class="bg-blue-500 text-white px-3 py-1 rounded text-sm hover:bg-blue-600">+</button>
+      <button @click="resetZoom" class="bg-gray-500 text-white px-3 py-1 rounded text-sm hover:bg-gray-600">Reset</button>
+      <button @click="zoomOut" class="bg-blue-500 text-white px-3 py-1 rounded text-sm hover:bg-blue-600">−</button>
     </div>
   </div>
 </template>
