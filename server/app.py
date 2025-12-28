@@ -1,13 +1,15 @@
 import os
 import sqlite3
 import json
+from dotenv import load_dotenv
+
+# Load environment variables BEFORE importing llm_service
+load_dotenv()
+
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from dotenv import load_dotenv
 from llm_service import generate_combination
 from models import Material
-
-load_dotenv()
 
 app = Flask(__name__)
 CORS(app, origins=["https://infinitecat.vercel.app", "https://cats.snailbunny.site", "http://localhost:5173"])

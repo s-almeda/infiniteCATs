@@ -3,20 +3,17 @@ import os
 import sqlite3
 import time
 from typing import Optional, List, Tuple
-# import numpy as np
 
-import ollama
 from pydantic import TypeAdapter
-# import emoji as emoji_lib
+from cerebras.cloud.sdk import Cerebras
 
 from models import Material
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'cache.db')
-# MODEL = 'llama3.2:latest'
-MODEL = 'llama3.1:latest'
-# MODEL = 'neural-chat:latest'
-#MODEL = 'mistral:7b-instruct-q4_K_M'
-# MODEL = 'hf.co/TheBloke/Mistral-7B-Instruct-v0.1-GGUF:Q4_K_M'
+MODEL = 'llama-3.3-70b'
+
+# Initialize Cerebras client
+client = Cerebras(api_key=os.environ.get("CEREBRAS_API_KEY"))
 
 def check_common_material_errors(material: Material) -> str:
     """Basic guardrails to reject clearly invalid model outputs."""
@@ -58,7 +55,7 @@ def _fetch_examples_for_word(word: str, limit: int = 5) -> List[Tuple[str, str, 
 
 def generate_combination(first_word: str, second_word: str, max_retries: int = 2) -> Optional[dict]:
     """
-    Generate a new material by combining two materials using Ollama.
+    Generate a new material by combining two materials using Cerebras API.
     
     Args:
         first_word: First material name
@@ -148,29 +145,29 @@ def generate_combination(first_word: str, second_word: str, max_retries: int = 2
 
     for attempt in range(max_retries + 1):
         print("-----")
-        print("about to send messages:")
-        print(messagesToSend)
+        print("about to send messages to Cerebras:")
+        print(f"Number of messages: {len(messagesToSend)}")
         try:
             start_time = time.time()
-            response = ollama.chat(
+            response = client.chat.completions.create(
+                messages=messagesToSend,
                 model=MODEL,
-                format=schema,
-                messages = messagesToSend
+                max_completion_tokens=1024,
+                temperature=0.2,
+                top_p=1,
+                stream=False
             )
             elapsed_time = time.time() - start_time
             
-            print(response['message']['role'])
-            print(response['message']['content'])
+            print(response.choices[0].message.role)
+            print(response.choices[0].message.content)
             print(f"Chat response time: {elapsed_time:.2f} seconds")
             print("-----")
 
-            material_json = json.loads(response['message']['content'])
+            material_json = json.loads(response.choices[0].message.content)
             output_material = TypeAdapter(Material).validate_python(material_json)
             # Capitalize each word in the generated name (handles single or multi-word)
             output_material.name = " ".join(word.capitalize() for word in output_material.name.strip().split())
-
-            # Generate an emoji separately
-            # output_material.emoji = generate_emoji(output_material.name)
 
             if (attempt == max_retries):
                 output_material.emoji = output_material.emoji[0] if output_material.emoji else '❓'
@@ -194,63 +191,10 @@ def generate_combination(first_word: str, second_word: str, max_retries: int = 2
 
     return None
 
+
+
 def consistent_order(first_word: str, second_word: str) -> tuple[str, str]:
     if first_word > second_word:
         return second_word, first_word
     return first_word, second_word
-
-
-# WIP to try to get better emojis, but not working well :/
-# def generate_emoji(word: str) -> Optional[str]:
-#     """Find the emoji closest to the word in semantic space using embeddings."""
-#     try:
-#         # Get all emojis with their descriptions - filter to base emojis only (no skin tones, variants)
-#         all_emojis = emoji_lib.EMOJI_DATA
-        
-#         # Filter to exclude skin tone variants and overly complex emojis
-#         filtered_emojis = {
-#             char: data for char, data in all_emojis.items()
-#             if 'skin tone' not in data.get('en', '').lower()
-#         }
-        
-#         # Embed the target word
-#         word_embedding_response = ollama.embed(model=MODEL, input=word)
-#         word_embedding = np.array(word_embedding_response['embeddings'][0])
-#         word_norm = np.linalg.norm(word_embedding)
-        
-#         best_match = None
-#         best_score = 0
-        
-#         print(f"Finding emoji for '{word}' from {len(filtered_emojis)} candidates...")
-#         for emoji_char, data in filtered_emojis.items():
-#             # Get emoji name/description (in 'en' key)
-#             emoji_name = data.get('en', '').replace('_', ' ').replace(':', '').strip()
-#             if not emoji_name:
-#                 continue
-            
-#             # Embed this emoji description
-#             emoji_embedding_response = ollama.embed(model=MODEL, input=emoji_name)
-#             emoji_embedding = np.array(emoji_embedding_response['embeddings'][0])
-            
-#             # Compute cosine similarity
-#             emoji_norm = np.linalg.norm(emoji_embedding)
-#             similarity = np.dot(word_embedding, emoji_embedding) / (word_norm * emoji_norm + 1e-10)
-            
-#             if similarity > best_score:
-#                 best_score = similarity
-#                 best_match = emoji_char
-#             print(f"Considering emoji: {emoji_char} (name: {emoji_name}, score: {similarity})")
-        
-#         print(f"Best match: {best_match} (score: {best_score})")
-        
-#         # Return best match if score is reasonable, otherwise fallback
-#         if best_match and best_score > 0.3:
-#             return best_match
-        
-#         return '❓'
-#     except Exception as e:
-#         print(f"Error finding emoji for {word}: {e}")
-#         import traceback
-#         traceback.print_exc()
-#         return '❓'
 

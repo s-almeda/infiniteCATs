@@ -1,7 +1,7 @@
 Flask==3.0.0
 Flask-CORS==4.0.0
 python-dotenv==1.0.0
-ollama==0.6.1
+cerebras-cloud-sdk==1.59.0
 pydantic==2.12.5
 # emoji==2.10.0
 # numpy

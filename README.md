@@ -7,9 +7,9 @@ A web game where you combine elements to create new things, powered by a local L
 ## Architecture
 
 - **Frontend:** Vue 3 + TypeScript + Vite (web UI)
-- **Backend:** Python Flask + Ollama (LLM integration)
+- **Backend:** Python Flask + Cerebras API (LLM integration)
 - **Database:** SQLite (caches combinations)
-- **Model:** Llama 3.2 (local inference via Ollama)
+- **Model:** Llama 3.3 70B (via Cerebras Cloud)
 
 ## Setup
 
@@ -17,17 +17,19 @@ A web game where you combine elements to create new things, powered by a local L
 
 1. **Python 3.8+** installed
 2. **Node.js 18+** installed
-3. **Ollama** - Download from [ollama.ai](https://ollama.ai)
+3. **Cerebras API Key** - Sign up at [cerebras.ai](https://cerebras.ai) to get your free API key
 
 ### Quick Start
 
-**Terminal 1 - Start Ollama:**
+**Step 1 - Set up API Key:**
+Create a `.env` file in the `server/` directory:
 ```bash
-ollama serve
+cd server
+echo 'CEREBRAS_API_KEY=your_api_key_here' > .env
 ```
-Ollama will automatically download Llama 3.2 on first use.
+Replace `your_api_key_here` with your actual Cerebras API key.
 
-**Terminal 2 - Start Backend:**
+**Terminal 1 - Start Backend:**
 ```bash
 cd server
 python3 -m venv venv
@@ -37,7 +39,7 @@ python app.py
 ```
 Backend runs on `http://localhost:3000`
 
-**Terminal 3 - Start Frontend:**
+**Terminal 2 - Start Frontend:**
 ```bash
 cd frontend
 npm install  # First time only
@@ -45,7 +47,7 @@ npm run dev
 ```
 Frontend runs on `http://localhost:5173`
 
-**You now have all 3 processes running.** Open http://localhost:5173 in your browser.
+**You now have both processes running.** Open http://localhost:5173 in your browser.
 
 ## Development Guide
 
@@ -53,14 +55,15 @@ Frontend runs on `http://localhost:5173`
 
 **Key files:**
 - `server/app.py` - Flask routes & API endpoints
-- `server/llm_service.py` - Ollama integration, new word generation logic
+- `server/llm_service.py` - Cerebras API integration, new word generation logic
 - `server/models.py` - Data models (Material, Recipe)
 - `server/cache.db` - SQLite database that stores words
 
 **To add a feature:**
-1. Add LLM logic to `llm_service.py` if needed
-2. Add Flask route to `app.py`
-3. Test with `curl` or Postman:
+1. Make sure `CEREBRAS_API_KEY` is set in your `.env` file
+2. Add LLM logic to `llm_service.py` if needed
+3. Add Flask route to `app.py`
+4. Test with `curl` or Postman:
    ```bash
    curl -X POST http://localhost:3000 \
      -H "Content-Type: application/json" \
