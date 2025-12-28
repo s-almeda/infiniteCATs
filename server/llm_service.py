@@ -69,8 +69,8 @@ def generate_combination(first_word: str, second_word: str, max_retries: int = 2
         Dict with 'result' and 'emoji' keys, or None if generation fails
     """
     first_word, second_word = consistent_order(first_word, second_word)
-    examples_first = _fetch_examples_for_word(first_word, limit=5)
-    examples_second = _fetch_examples_for_word(second_word, limit=5)
+    examples_first = _fetch_examples_for_word(first_word, limit=3)
+    examples_second = _fetch_examples_for_word(second_word, limit=3)
 
     base_system = '''Create a new material based on two given materials. A material should have a name and an emoji that represents the name.
             the name should be a single word or short phrase, and the emoji should be a single character that represents the name.

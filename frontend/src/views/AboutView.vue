@@ -1,6 +1,11 @@
 <template>
   <div class="about">
-    <h1>This is an about page</h1>
+    <h1>this is InfiniteCATs!!</h1>
+    <h2>InfiniteCraft with Creative Activity Tracing</h2>
+    
+    <p>This is a web game where you combine elements to create new things, powered by a local LLM. 
+    Built upon <a href="https://github.com/bufferhead-code/opencraft">@bufferhead's OpenCraft</a>.</p>
+
   </div>
 </template>
 
