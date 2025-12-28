@@ -200,15 +200,7 @@ function onMouseDown(event) {
   const rect = canvas.value.getBoundingClientRect();
   const screenX = event.clientX - rect.left;
   const screenY = event.clientY - rect.top;
-  
-  // Handle panning with middle mouse button or right-click
-  if (event.button === 1 || event.button === 2) {
-    isPanning = true;
-    panStartX = screenX;
-    panStartY = screenY;
-    return;
-  }
-  
+
   const { x, y } = screenToCanvasCoords(screenX, screenY);
   dragStartPos.value = { x: screenX, y: screenY };
 
@@ -218,7 +210,15 @@ function onMouseDown(event) {
     return dx * dx + dy * dy <= 10 * 10;
   });
 
-  if (hit) {
+  // Left-click on empty space pans; left-click on node drags/clicks node.
+  if (!hit && event.button === 0) {
+    isPanning = true;
+    panStartX = screenX;
+    panStartY = screenY;
+    return;
+  }
+
+  if (hit && event.button === 0) {
     draggingNode.value = hit;
     hit.fx = x;
     hit.fy = y;
@@ -254,19 +254,33 @@ function onMouseLeave() {
   hoverNode.value = null;
 }
 
+function setZoomToViewCenter(newZoom) {
+  const clampedZoom = Math.max(0.5, Math.min(3, newZoom));
+  const oldZoom = zoomLevel.value || 1;
+  if (clampedZoom === oldZoom) return;
+
+  // Keep the *current view center* fixed by scaling pan with the zoom ratio.
+  // With our transform order (pan -> center -> scale), maintaining the same
+  // world point under screen-center requires: pan' = pan * (newZoom/oldZoom)
+  const ratio = clampedZoom / oldZoom;
+  panX.value *= ratio;
+  panY.value *= ratio;
+  zoomLevel.value = clampedZoom;
+}
+
 function onWheel(event) {
   event.preventDefault();
   const zoomSpeed = 0.1;
   const direction = event.deltaY > 0 ? -1 : 1;
-  zoomLevel.value = Math.max(0.5, Math.min(3, zoomLevel.value + direction * zoomSpeed));
+  setZoomToViewCenter(zoomLevel.value + direction * zoomSpeed);
 }
 
 function zoomIn() {
-  zoomLevel.value = Math.min(3, zoomLevel.value + 0.2);
+  setZoomToViewCenter(zoomLevel.value + 0.2);
 }
 
 function zoomOut() {
-  zoomLevel.value = Math.max(0.5, zoomLevel.value - 0.2);
+  setZoomToViewCenter(zoomLevel.value - 0.2);
 }
 
 function resetZoom() {
