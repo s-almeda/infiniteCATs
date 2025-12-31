@@ -3,7 +3,7 @@ Flask-CORS==4.0.0
 python-dotenv==1.0.0
 cerebras-cloud-sdk==1.59.0
 pydantic==2.12.5
-sqlite-vec==0.1.4
+sqlite-vec==0.1.5
 sentence-transformers==3.0.1
 numpy>=2.0.0
 # emoji==2.10.0
