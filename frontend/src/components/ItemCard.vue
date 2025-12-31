@@ -43,11 +43,14 @@ const [, drop] = useDrop(() => ({
 
       // Always call backend, but only pass username if logged in
       try {
-        const response = await axios.post(`${apiUrl}/`, {
+        const requestBody = {
           first: store.boxes[props.id].title,
           second: secondTitle,
           username: isLoggedIn.value ? username.value : null
-        })
+        }
+        console.log('Sending to backend:', requestBody, 'isLoggedIn:', isLoggedIn.value, 'username:', username.value)
+        
+        const response = await axios.post(`${apiUrl}/`, requestBody)
 
         resultAnswer = response.data.result !== '' ? response.data.result : store.boxes[props.id].title
         resultEmoji = response.data.emoji !== '' ? response.data.emoji : store.boxes[props.id].emoji

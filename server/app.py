@@ -269,6 +269,7 @@ def craft_new_word(first_word: str, second_word: str, username: str = None) -> d
     
     If username is provided, spawns background task to log to database.
     If username is None, just returns LLM result without any database logging.
+    isDiscovery = true only if this material has never been discovered by anyone.
     """
     # Check cache
     cached = get_cached_combination(first_word, second_word)
