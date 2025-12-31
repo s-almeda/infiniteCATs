@@ -6,6 +6,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 import sqlite_vec
 from sentence_transformers import SentenceTransformer
+import numpy as np
 
 # Load environment variables BEFORE importing llm_service
 load_dotenv()
@@ -215,6 +216,38 @@ def get_per_user_rank(first_word: str, second_word: str) -> int:
     # Per-user rank is max of parents + 1
     return max(first_rank, second_rank) + 1
 
+def get_material_distance(material1: str, material2: str) -> dict:
+    """
+    Calculate cosine similarity distance between two materials' embeddings.
+    Returns a dict with similarity score (0-1, where 1 = identical).
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Retrieve embeddings for both materials
+    cursor.execute('SELECT embedding FROM materials WHERE name = ?', (material1,))
+    result1 = cursor.fetchone()
+    
+    cursor.execute('SELECT embedding FROM materials WHERE name = ?', (material2,))
+    result2 = cursor.fetchone()
+    
+    conn.close()
+    
+    if not result1 or not result2:
+        return {'error': 'One or both materials not found', 'similarity': None}
+    
+    # Deserialize embeddings from BLOB (float32 array)
+    embedding1 = np.frombuffer(result1['embedding'], dtype=np.float32)
+    embedding2 = np.frombuffer(result2['embedding'], dtype=np.float32)
+    
+    # Calculate cosine similarity manually: (a · b) / (||a|| * ||b||)
+    dot_product = np.dot(embedding1, embedding2)
+    norm1 = np.linalg.norm(embedding1)
+    norm2 = np.linalg.norm(embedding2)
+    similarity = float(dot_product / (norm1 * norm2))
+    
+    return {'material1': material1, 'material2': material2, 'similarity': similarity}
+
 def _background_add_material_and_log(first_word: str, second_word: str, result_name: str, result_emoji: str, username: str, is_discovery: bool):
     """Background task: generate embedding, add material, and log combination"""
     try:
@@ -369,6 +402,28 @@ def combine_custom_words():
 def health_check():
     """Health check endpoint"""
     return jsonify({'status': 'ok'})
+
+@app.route('/api/distance', methods=['POST'])
+def get_distance():
+    """
+    Calculate cosine similarity distance between two materials.
+    Request: POST /api/distance
+    Body: {"material1": "Fire", "material2": "Water"}
+    Response: {"material1": "Fire", "material2": "Water", "similarity": 0.42}
+    """
+    data = request.get_json()
+    
+    if not data or 'material1' not in data or 'material2' not in data:
+        return jsonify({'error': 'Missing material1 or material2'}), 400
+    
+    material1 = data['material1'].strip()
+    material2 = data['material2'].strip()
+    
+    if not material1 or not material2:
+        return jsonify({'error': 'Material names cannot be empty'}), 400
+    
+    result = get_material_distance(material1, material2)
+    return jsonify(result)
 
 if __name__ == '__main__':
     init_db()

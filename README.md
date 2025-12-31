@@ -198,6 +198,25 @@ Get all materials and their combination relationships.
 }
 ```
 
+### `POST /api/distance`
+Calculate cosine similarity between two materials' embeddings.
+```
+Request:
+POST /api/distance
+{
+  "material1": "Fire",
+  "material2": "Water"
+}
+
+Response:
+{
+  "material1": "Fire",
+  "material2": "Water",
+  "similarity": 0.42
+}
+```
+**Similarity:** 0-1 scale where 1 = identical materials, 0 = completely different
+
 ### `GET /health`
 Health check.
 ```json
