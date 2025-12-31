@@ -36,5 +36,28 @@ export const useResourcesStore = defineStore('resources', () => {
         combinationCount.value++;
     }
 
-    return { resources, addResource, combinationCount, triggerCombinationEvent }
+    async function loadUserMaterials(username: string) {
+        try {
+            const apiUrl = import.meta.env.VITE_FLASK_API_URL || 'http://localhost:3000'
+            const response = await fetch(`${apiUrl}/api/user-materials?username=${username}`)
+            
+            if (!response.ok) {
+                console.error('Failed to load user materials:', response.status)
+                return
+            }
+            
+            const { materials } = await response.json()
+            
+            // Merge with existing materials (avoid duplicates)
+            materials.forEach((mat: any) => {
+                if (!resources.value.find(r => r.title === mat.name)) {
+                    resources.value.push({ title: mat.name, emoji: mat.emoji })
+                }
+            })
+        } catch (error) {
+            console.error('Error loading user materials:', error)
+        }
+    }
+
+    return { resources, addResource, combinationCount, triggerCombinationEvent, loadUserMaterials }
 })

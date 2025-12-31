@@ -426,6 +426,33 @@ def get_distance():
     result = get_material_distance(material1, material2)
     return jsonify(result)
 
+@app.route('/api/user-materials', methods=['GET'])
+def get_user_materials():
+    """
+    Get all materials discovered by a specific user.
+    Query param: username=shm
+    Response: {"materials": [{"name": "Steam", "emoji": "🌫️"}, ...]}
+    """
+    username = request.args.get('username')
+    
+    if not username:
+        return jsonify({'error': 'Missing username parameter'}), 400
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Get all unique materials discovered by this user (from combinations table)
+    cursor.execute(
+        'SELECT DISTINCT resultName, resultEmoji FROM combinations WHERE username = ? ORDER BY resultName',
+        (username,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    
+    materials = [{'name': row['resultName'], 'emoji': row['resultEmoji']} for row in rows]
+    
+    return jsonify({'materials': materials})
+
 if __name__ == '__main__':
     init_db()
     app.run(debug=True, host='0.0.0.0', port=3000)
