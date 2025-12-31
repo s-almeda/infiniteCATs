@@ -197,23 +197,23 @@ def add_material(name: str, emoji: str, discoverer: str):
     conn.close()
     return True
 
-def get_per_user_rank(first_word: str, second_word: str) -> int:
-    """Calculate per-user rank based on parent materials"""
+def get_per_user_rank(first_word: str, second_word: str, username: str) -> int:
+    """Calculate per-user rank based on parent materials for a specific user"""
     conn = get_db()
     cursor = conn.cursor()
     
-    # Get max rank of the two parent words (default to 0 for base elements)
-    cursor.execute('SELECT MAX(perUserRank) as max_rank FROM combinations WHERE resultName = ?', (first_word,))
+    # Get min rank of the two parent words for this user (default to 0 for base elements)
+    cursor.execute('SELECT MIN(perUserRank) as min_rank FROM combinations WHERE resultName = ? AND username = ?', (first_word, username))
     first_rank_result = cursor.fetchone()
-    first_rank = first_rank_result['max_rank'] if first_rank_result['max_rank'] is not None else 0
+    first_rank = first_rank_result['min_rank'] if first_rank_result['min_rank'] is not None else 0
     
-    cursor.execute('SELECT MAX(perUserRank) as max_rank FROM combinations WHERE resultName = ?', (second_word,))
+    cursor.execute('SELECT MIN(perUserRank) as min_rank FROM combinations WHERE resultName = ? AND username = ?', (second_word, username))
     second_rank_result = cursor.fetchone()
-    second_rank = second_rank_result['max_rank'] if second_rank_result['max_rank'] is not None else 0
+    second_rank = second_rank_result['min_rank'] if second_rank_result['min_rank'] is not None else 0
     
     conn.close()
     
-    # Per-user rank is max of parents + 1
+    # Per-user rank is max of parents + 1 (i.e. the depth in the user's discovery tree)
     return max(first_rank, second_rank) + 1
 
 def get_material_distance(material1: str, material2: str) -> dict:
@@ -256,7 +256,7 @@ def _background_add_material_and_log(first_word: str, second_word: str, result_n
             add_material(result_name, result_emoji, username)
         
         # Log the combination (fast, but do in background too to keep response time minimal)
-        per_user_rank = get_per_user_rank(first_word, second_word)
+        per_user_rank = get_per_user_rank(first_word, second_word, username)
         log_combination(first_word, second_word, result_name, result_emoji, username, per_user_rank, is_discovery)
     except Exception as e:
         print(f"Error in background task: {e}")
