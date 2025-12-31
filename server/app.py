@@ -248,6 +248,46 @@ def get_material_distance(material1: str, material2: str) -> dict:
     
     return {'material1': material1, 'material2': material2, 'similarity': similarity}
 
+def get_material_distance_to_avg(material1: str, material2: str, material3: str) -> tuple[float, float, float]:
+    """ calculate the cosine similarity distance between each material and the average embedding of the three materials """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Retrieve embeddings for all three materials
+    cursor.execute('SELECT embedding FROM materials WHERE name = ?', (material1,))
+    result1 = cursor.fetchone()
+    
+    cursor.execute('SELECT embedding FROM materials WHERE name = ?', (material2,))
+    result2 = cursor.fetchone()
+    
+    cursor.execute('SELECT embedding FROM materials WHERE name = ?', (material3,))
+    result3 = cursor.fetchone()
+    
+    conn.close()
+    
+    if not result1 or not result2 or not result3:
+        return (None, None, None)
+    
+    # Deserialize embeddings from BLOB (float32 array)
+    embedding1 = np.frombuffer(result1['embedding'], dtype=np.float32)
+    embedding2 = np.frombuffer(result2['embedding'], dtype=np.float32)
+    embedding3 = np.frombuffer(result3['embedding'], dtype=np.float32)
+    
+    # Calculate average embedding
+    avg_embedding = (embedding1 + embedding2 + embedding3) / 3.0
+    
+    def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+        dot_product = np.dot(a, b)
+        norm_a = np.linalg.norm(a)
+        norm_b = np.linalg.norm(b)
+        return float(dot_product / (norm_a * norm_b))
+    
+    sim1 = (1 - cosine_similarity(embedding1, avg_embedding))/2
+    sim2 = (1 - cosine_similarity(embedding2, avg_embedding))/2
+    sim3 = (1 - cosine_similarity(embedding3, avg_embedding))/2
+    print(f"Distances to avg for {material1}, {material2}, {material3}: {sim1}, {sim2}, {sim3}")
+    return (sim1, sim2, sim3)
+
 def _background_add_material_and_log(first_word: str, second_word: str, result_name: str, result_emoji: str, username: str, is_discovery: bool):
     """Background task: generate embedding, add material, and log combination"""
     try:
@@ -374,11 +414,21 @@ def get_nodes_and_edges(username: str | None = None):
             result_emoji = row['resultEmoji']
             nodes[result_name] = {'id': result_name, 'label': result_name, 'emoji': result_emoji}
 
-        edges.append({'from1': first_word, 'from2': second_word, 'to': result_name})
+        # Calculate distance between materials and their average
+        distancefrom1, distancefrom2, distanceto = get_material_distance_to_avg(first_word, second_word, result_name)
+
+        edges.append({
+            'from1': first_word,
+            'from2': second_word,
+            'to': result_name,
+            'distanceFrom1': distancefrom1,
+            'distanceFrom2': distancefrom2,
+            'distanceTo': distanceto
+        })
 
     print(f"Fetched {len(nodes)} nodes and {len(edges)} edges for {scope}.")
     return list(nodes.values()), edges
-
+    
 @app.route('/api/graph', methods=['GET'])
 def get_graph_data():
     username = request.args.get('username')

@@ -336,10 +336,11 @@ async function loadGraphData() {
       };
       expandedNodes.push(combNode);
 
-      // Create links: source1 → combination, source2 → combination, combination → target
-      expandedLinks.push({ source: sourceNode1, target: combNode });
-      expandedLinks.push({ source: sourceNode2, target: combNode });
-      expandedLinks.push({ source: combNode, target: targetNode });
+      // Create links with distance data: source1 → combination, source2 → combination, combination → target
+      console.log("Creating expanded links for combination:", l);
+      expandedLinks.push({ source: sourceNode1, target: combNode, distance: l.distanceFrom1 });
+      expandedLinks.push({ source: sourceNode2, target: combNode, distance: l.distanceFrom2 });
+      expandedLinks.push({ source: combNode, target: targetNode, distance: l.distanceTo });
     });
 
     const normalizedLinks = expandedLinks;
@@ -355,12 +356,22 @@ async function loadGraphData() {
     simulation = forceSimulation(expandedNodes)
       .force("link",
         forceLink(normalizedLinks)
-          .distance(l =>
-            l.source.type === "combination" ||
-            l.target.type === "combination"
-              ? 40
-              : 80
-          )
+          .distance(l => {
+            //debug log link with distance
+            console.log("Link distance:", l.distance);
+            const maxDistance = 400;
+            const minDistance = 20;
+            return minDistance + l.distance * (maxDistance - minDistance);
+            // // Use distance values from API if available, otherwise use defaults
+            // if (l.distance !== undefined && l.distance !== null) {
+            //   //expect distance to be between 0 and 1, map to 20-200 range
+            //   const maxDistance = 400;
+            //   const minDistance = 20;
+            //   return minDistance + l.distance * (maxDistance - minDistance);
+            // }
+            // // Fallback to original defaults if no distance data
+            // return l.source.type === "combination" || l.target.type === "combination" ? 40 : 80;
+          })
           .strength(0.8)
       )
       .force("charge", forceManyBody().strength(-200))
