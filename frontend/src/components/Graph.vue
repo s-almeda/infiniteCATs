@@ -8,11 +8,14 @@ import {
 } from "d3-force";
 import { useBoxesStore } from "@/stores/useBoxesStore";
 import { useResourcesStore } from "@/stores/useResourcesStore";
+import { useUserStore } from "@/stores/useUserStore";
 import { storeToRefs } from "pinia";
 
 const boxStore = useBoxesStore();
 const resourceStore = useResourcesStore();
+const userStore = useUserStore();
 const { combinationCount } = storeToRefs(resourceStore);
+const { username, isLoggedIn } = storeToRefs(userStore);
 const canvas = ref(null);
 let simulation;
 let ctx;
@@ -293,7 +296,10 @@ async function loadGraphData() {
   console.log("Loading graph data...");
   try {
     const apiUrl = import.meta.env.VITE_FLASK_API_URL || 'http://localhost:3000'
-    const res = await fetch(`${apiUrl}/api/graph`);
+    const query = isLoggedIn.value && username.value
+      ? `?username=${encodeURIComponent(username.value)}`
+      : '';
+    const res = await fetch(`${apiUrl}/api/graph${query}`);
     if (!res.ok) {
       console.error("Failed to fetch graph data:", res.status);
       return;

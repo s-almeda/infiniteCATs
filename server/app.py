@@ -315,53 +315,74 @@ def craft_new_word(first_word: str, second_word: str, username: str = None) -> d
     # Return empty result if generation failed
     return {'result': '', 'emoji': '', 'isDiscovery': False}
 
-def get_nodes_and_edges():
-    """Retrieve all nodes and edges for graph visualization"""
-    print("Fetching graph data from database...")
+def get_nodes_and_edges(username: str | None = None):
+    """Retrieve graph nodes/edges filtered by username when provided."""
+    scope = f"user={username}" if username else "all users"
+    print(f"Fetching graph data from database for {scope}...")
+
+    # Pull combinations scoped to a specific user when username is provided
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute('SELECT firstWord, secondWord, resultName, resultEmoji FROM combinations')
+    if username:
+        cursor.execute(
+            'SELECT firstWord, secondWord, resultName, resultEmoji FROM combinations WHERE username = ?',
+            (username,)
+        )
+    else:
+        cursor.execute('SELECT firstWord, secondWord, resultName, resultEmoji FROM combinations')
     rows = cursor.fetchall()
     conn.close()
 
-    nodes = {}
+    nodes: dict[str, dict] = {}
     edges = []
-    
-    # Get all materials from database
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('SELECT name, emoji FROM materials')
-    materials = cursor.fetchall()
-    conn.close()
-    
-    # Add all materials as nodes
+
+    # Always include base materials
+    base_materials = ['Fire', 'Water', 'Earth', 'Air']
+    needed_names = set(base_materials)
+
+    for row in rows:
+        needed_names.update([row['firstWord'], row['secondWord'], row['resultName']])
+
+    # Fetch emojis for needed materials in a single query
+    materials = []
+    if needed_names:
+        placeholders = ','.join(['?'] * len(needed_names))
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute(f'SELECT name, emoji FROM materials WHERE name IN ({placeholders})', tuple(needed_names))
+        materials = cursor.fetchall()
+        conn.close()
+
     for material in materials:
-        nodes[material['name']] = {'id': material['name'], 'label': material['name'], 'emoji': material['emoji']}
-    
-    # Add edges from combinations
+        nodes[material['name']] = {
+            'id': material['name'],
+            'label': material['name'],
+            'emoji': material['emoji']
+        }
+
+    # Add edges from combinations and ensure nodes exist
     for row in rows:
         first_word = row['firstWord']
         second_word = row['secondWord']
         result_name = row['resultName']
-        
-        # Ensure nodes exist
+
         if first_word not in nodes:
-            nodes[first_word] = {'id': first_word, 'label': first_word, 'emoji': get_emoji_by_word(first_word)}
+            nodes[first_word] = {'id': first_word, 'label': first_word, 'emoji': get_emoji_by_word(first_word) or '❓'}
         if second_word not in nodes:
-            nodes[second_word] = {'id': second_word, 'label': second_word, 'emoji': get_emoji_by_word(second_word)}
+            nodes[second_word] = {'id': second_word, 'label': second_word, 'emoji': get_emoji_by_word(second_word) or '❓'}
         if result_name not in nodes:
             result_emoji = row['resultEmoji']
             nodes[result_name] = {'id': result_name, 'label': result_name, 'emoji': result_emoji}
-        
-        # Add edge
+
         edges.append({'from1': first_word, 'from2': second_word, 'to': result_name})
-    
-    print(f"Fetched {len(nodes)} nodes and {len(edges)} edges.")
+
+    print(f"Fetched {len(nodes)} nodes and {len(edges)} edges for {scope}.")
     return list(nodes.values()), edges
 
 @app.route('/api/graph', methods=['GET'])
 def get_graph_data():
-    nodes, edges = get_nodes_and_edges()
+    username = request.args.get('username')
+    nodes, edges = get_nodes_and_edges(username)
     return jsonify({'nodes': nodes, 'links': edges})
 
 @app.route('/', methods=['GET'])
