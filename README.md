@@ -17,17 +17,12 @@ A web game where you combine elements to create new things, powered by a local L
 
 1. **Python 3.8+** installed
 2. **Node.js 18+** installed
-3. **Cerebras API Key** - Sign up at [cerebras.ai](https://cerebras.ai) to get your free API key
+3. **Cerebras API Key**
 
 ### Quick Start
 
 **Step 1 - Set up API Key:**
-Create a `.env` file in the `server/` directory:
-```bash
-cd server
-echo 'CEREBRAS_API_KEY=your_api_key_here' > .env
-```
-Replace `your_api_key_here` with your actual Cerebras API key.
+Create a `.env` file in the `server/` directory, and paste in the contents that shm will send to u (including the cerebras.ai API key)
 
 **Terminal 1 - Start Backend:**
 ```bash
@@ -57,7 +52,7 @@ Frontend runs on `http://localhost:5173`
 - `server/app.py` - Flask routes & API endpoints
 - `server/llm_service.py` - Cerebras API integration, new word generation logic
 - `server/models.py` - Data models (Material, Recipe)
-- `server/cache.db` - SQLite database that stores words
+- `server/global.db` - SQLite database that stores materials and combinations
 
 **To add a feature:**
 1. Make sure `CEREBRAS_API_KEY` is set in your `.env` file
@@ -73,7 +68,51 @@ Frontend runs on `http://localhost:5173`
 **To modify database:**
 - Schema is initialized in `init_db()` function in `app.py`
 - Add new tables or columns there
-- Database persists in `cache.db`
+- Database persists in `global.db`
+
+## Database Schema
+
+### `materials` table
+Stores every unique element and its MiniLM embedding
+```
+name            TEXT PRIMARY KEY    (e.g., "Steam")
+emoji           TEXT                (e.g., "🌫️")
+firstDiscoveredAt TIMESTAMP         (when first created)
+discoverer      TEXT                (username who discovered it)
+embedding       BLOB                (384-dim vector from MiniLM model)
+```
+
+### `combinations` table
+Logs EVERY combination event that occurs
+```
+id              INTEGER PRIMARY KEY  (auto-incrementing)
+firstWord       TEXT                (e.g., "Water")
+secondWord      TEXT                (e.g., "Fire")
+resultName      TEXT                (e.g., "Steam", foreign key to materials)
+resultEmoji     TEXT                (e.g., "🌫️")
+username        TEXT                (who made the combination)
+timestamp       TIMESTAMP           (when it happened)
+perUserRank     INTEGER             (max rank of parents + 1)
+isDiscovery     BOOLEAN             (true if first time this result was found)
+```
+
+## When a user combines 2 materials:**
+
+1. Flask receives POST `/` with `{first, second, username}`
+
+2. (Frontend returns result immediately):
+   - Check if combination already cached in database
+   - If cached, return cached result
+   - If not cached, call LLM to generate new combination
+   - Return result to user (this takes ~1-2 seconds)
+
+3. **Background thread spawns** (happens simultaneously):
+   - Generates embedding for the new material using MiniLM (384 dimensions)
+   - Add material to `materials` table with embedding (if new discovery)
+   - Calculate `perUserRank` based on parent materials
+   - Log the combination event in `combinations` table
+   - Set `isDiscovery=true` if this was the first time finding this result
+
 
 ### Frontend (Vue 3/TypeScript)
 
@@ -103,27 +142,48 @@ const { result, emoji } = await response.json()
 ## API Endpoints
 
 ### `GET /`
-Returns 6 default element combinations.
+Get all discovered materials.
 ```json
 {
-  "Water + Fire": { "result": "Steam", "emoji": "🌊" },
-  ...
+  "materials": [
+    { "name": "Fire", "emoji": "🔥" },
+    { "name": "Water", "emoji": "💧" },
+    { "name": "Steam", "emoji": "🌫️" }
+  ]
 }
 ```
 
 ### `POST /`
-Combine two custom words.
+Combine two words.
 ```
 Request:
 POST /
-{ "first": "Water", "second": "Fire" }
+{ "first": "Water", "second": "Fire", "username": "player1" }
 
-Response:
-{ "result": "Steam", "emoji": "🌊" }
+Response (immediate):
+{ "result": "Steam", "emoji": "🌫️" }
+```
+⚠️ **Note:** Response returns immediately. Embedding generation and database logging happen in background.
+
+### `GET /api/graph`
+Get all materials and their combination relationships.
+```json
+{
+  "nodes": [
+    { "id": "Fire", "label": "Fire", "emoji": "🔥" },
+    { "id": "Steam", "label": "Steam", "emoji": "🌫️" }
+  ],
+  "links": [
+    { "from1": "Water", "from2": "Fire", "to": "Steam" }
+  ]
+}
 ```
 
 ### `GET /health`
 Health check.
+```json
+{ "status": "ok" }
+```
 
 ## Project Structure
 

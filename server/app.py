@@ -1,7 +1,11 @@
 import os
 import sqlite3
 import json
+import threading
+from datetime import datetime
 from dotenv import load_dotenv
+import sqlite_vec
+from sentence_transformers import SentenceTransformer
 
 # Load environment variables BEFORE importing llm_service
 load_dotenv()
@@ -15,44 +19,99 @@ app = Flask(__name__)
 CORS(app, origins=["https://infinitecat.vercel.app", "https://cats.snailbunny.site", "http://localhost:5173"])
 
 # Database setup
-DB_PATH = os.path.join(os.path.dirname(__file__), 'cache.db')
+DB_PATH = os.path.join(os.path.dirname(__file__), 'global.db')
+embedding_model = None  # Will be loaded lazily
 
 def get_db():
-    """Get database connection"""
+    """Get database connection with sqlite-vec support"""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
     return conn
 
 def init_db():
-    """Initialize database with cache table"""
+    """Initialize database with materials and combinations tables"""
     conn = get_db()
     cursor = conn.cursor()
+    
+    # Create materials table
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS word_cache (
-            id INTEGER PRIMARY KEY,
-            first_word TEXT,
-            second_word TEXT,
-            result TEXT,
-            emoji TEXT
+        CREATE TABLE IF NOT EXISTS materials (
+            name TEXT PRIMARY KEY,
+            emoji TEXT NOT NULL,
+            firstDiscoveredAt TIMESTAMP NOT NULL,
+            discoverer TEXT NOT NULL,
+            embedding BLOB
         )
     ''')
+    
+    # Create combinations table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS combinations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            firstWord TEXT NOT NULL,
+            secondWord TEXT NOT NULL,
+            resultName TEXT NOT NULL,
+            resultEmoji TEXT NOT NULL,
+            username TEXT NOT NULL,
+            timestamp TIMESTAMP NOT NULL,
+            perUserRank INTEGER,
+            isDiscovery BOOLEAN NOT NULL,
+            FOREIGN KEY(resultName) REFERENCES materials(name)
+        )
+    ''')
+    
+    # Create a virtual table for vector search (sqlite-vec requirement)
+    try:
+        cursor.execute('CREATE VIRTUAL TABLE IF NOT EXISTS material_embeddings USING vec0(name TEXT PRIMARY KEY, embedding float[384])')
+    except sqlite3.OperationalError:
+        # Table might already exist
+        pass
+    
+    # Insert base elements if they don't exist
+    base_elements = [
+        ('Fire', '🔥'),
+        ('Water', '💧'),
+        ('Earth', '🌍'),
+        ('Air', '💨')
+    ]
+    
+    for name, emoji in base_elements:
+        cursor.execute('SELECT name FROM materials WHERE name = ?', (name,))
+        if not cursor.fetchone():
+            # Generate embedding for base element
+            embedding = generate_embedding(name)
+            from sqlite_vec import serialize_float32
+            embedding_blob = serialize_float32(embedding)
+            
+            cursor.execute(
+                'INSERT INTO materials (name, emoji, firstDiscoveredAt, discoverer, embedding) VALUES (?, ?, ?, ?, ?)',
+                (name, emoji, datetime.now().isoformat(), 'system', embedding_blob)
+            )
+    
     conn.commit()
     conn.close()
 
+def get_embedding_model():
+    """Lazy load the embedding model"""
+    global embedding_model
+    if embedding_model is None:
+        embedding_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+    return embedding_model
+
+def generate_embedding(text: str):
+    """Generate embedding for a material name"""
+    model = get_embedding_model()
+    embedding = model.encode(text, convert_to_tensor=False)
+    return embedding
+
 def get_emoji_by_word(word: str) -> str:
-    """Retrieve a cached emoji for a word from the database"""
-    # special case for Fire, Water, Earth, Air
-    special_emojis = {
-        'Fire': '🔥',
-        'Water': '💧',
-        'Earth': '🌍',
-        'Air': '💨'
-    }
-    if word in special_emojis:
-        return special_emojis[word]
+    """Retrieve emoji for a word from the database"""
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute('SELECT result, emoji FROM word_cache WHERE result = ?', (word,))
+    cursor.execute('SELECT emoji FROM materials WHERE name = ?', (word,))
     result = cursor.fetchone()
     conn.close()
     return result['emoji'] if result else None
@@ -67,18 +126,18 @@ def get_cached_combination(first_word: str, second_word: str) -> dict:
     
     # Try first ordering
     cursor.execute(
-        'SELECT result, emoji FROM word_cache WHERE first_word = ? AND second_word = ?',
+        'SELECT resultName, resultEmoji FROM combinations WHERE firstWord = ? AND secondWord = ? LIMIT 1',
         (first_word, second_word)
     )
     result = cursor.fetchone()
     
     if result:
         conn.close()
-        return {'result': result['result'], 'emoji': result['emoji']}
+        return {'result': result['resultName'], 'emoji': result['resultEmoji']}
     
     # Try reverse ordering
     cursor.execute(
-        'SELECT result, emoji FROM word_cache WHERE first_word = ? AND second_word = ?',
+        'SELECT resultName, resultEmoji FROM combinations WHERE firstWord = ? AND secondWord = ? LIMIT 1',
         (second_word, first_word)
     )
     result = cursor.fetchone()
@@ -86,7 +145,7 @@ def get_cached_combination(first_word: str, second_word: str) -> dict:
     conn.close()
     
     if result:
-        return {'result': result['result'], 'emoji': result['emoji']}
+        return {'result': result['resultName'], 'emoji': result['resultEmoji']}
     
     return None
 
@@ -101,28 +160,116 @@ def cache_combination(first_word: str, second_word: str, result: str, emoji: str
     conn.commit()
     conn.close()
 
-def craft_new_word(first_word: str, second_word: str) -> dict:
+def log_combination(first_word: str, second_word: str, result_name: str, result_emoji: str, username: str, per_user_rank: int, is_discovery: bool):
+    """Log a combination event to the database"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        'INSERT INTO combinations (firstWord, secondWord, resultName, resultEmoji, username, timestamp, perUserRank, isDiscovery) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        (first_word, second_word, result_name, result_emoji, username, datetime.now().isoformat(), per_user_rank, is_discovery)
+    )
+    conn.commit()
+    conn.close()
+
+def add_material(name: str, emoji: str, discoverer: str):
+    """Add a new material to the database with embedding"""
+    embedding = generate_embedding(name)
+    from sqlite_vec import serialize_float32
+    embedding_blob = serialize_float32(embedding)
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Check if material already exists
+    cursor.execute('SELECT name FROM materials WHERE name = ?', (name,))
+    if cursor.fetchone():
+        conn.close()
+        return False  # Already exists
+    
+    # Insert into materials table
+    cursor.execute(
+        'INSERT INTO materials (name, emoji, firstDiscoveredAt, discoverer, embedding) VALUES (?, ?, ?, ?, ?)',
+        (name, emoji, datetime.now().isoformat(), discoverer, embedding_blob)
+    )
+    
+    conn.commit()
+    conn.close()
+    return True
+
+def get_per_user_rank(first_word: str, second_word: str) -> int:
+    """Calculate per-user rank based on parent materials"""
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Get max rank of the two parent words (default to 0 for base elements)
+    cursor.execute('SELECT MAX(perUserRank) as max_rank FROM combinations WHERE resultName = ?', (first_word,))
+    first_rank_result = cursor.fetchone()
+    first_rank = first_rank_result['max_rank'] if first_rank_result['max_rank'] is not None else 0
+    
+    cursor.execute('SELECT MAX(perUserRank) as max_rank FROM combinations WHERE resultName = ?', (second_word,))
+    second_rank_result = cursor.fetchone()
+    second_rank = second_rank_result['max_rank'] if second_rank_result['max_rank'] is not None else 0
+    
+    conn.close()
+    
+    # Per-user rank is max of parents + 1
+    return max(first_rank, second_rank) + 1
+
+def _background_add_material_and_log(first_word: str, second_word: str, result_name: str, result_emoji: str, username: str, is_discovery: bool):
+    """Background task: generate embedding, add material, and log combination"""
+    try:
+        # Add material with embedding (slow)
+        if is_discovery:
+            add_material(result_name, result_emoji, username)
+        
+        # Log the combination (fast, but do in background too to keep response time minimal)
+        per_user_rank = get_per_user_rank(first_word, second_word)
+        log_combination(first_word, second_word, result_name, result_emoji, username, per_user_rank, is_discovery)
+    except Exception as e:
+        print(f"Error in background task: {e}")
+
+def craft_new_word(first_word: str, second_word: str, username: str = "anonymous") -> dict:
     """
     Craft a new word by combining two words.
     Checks cache first, then generates using LLM if not cached.
+    Returns result immediately; embedding/logging happens in background.
     """
     # Check cache
     cached = get_cached_combination(first_word, second_word)
     if cached:
+        # Spawn background task to log the cached combination
+        thread = threading.Thread(
+            target=_background_add_material_and_log,
+            args=(first_word, second_word, cached['result'], cached['emoji'], username, False),
+            daemon=True
+        )
+        thread.start()
         return cached
     
     # Generate new combination
     combination = generate_combination(first_word, second_word)
 
-    #check if generated combination was made another way, if so return that
     if combination and combination['result']:
-        cached = get_emoji_by_word(combination['result'])
-        if cached:
-            return {'result': combination['result'], 'emoji': cached}
+        result_name = combination['result']
+        result_emoji = combination['emoji']
         
-        # Cache the result
-        cache_combination(first_word, second_word, combination['result'], combination['emoji'])
-        return combination
+        # Check if this result already exists in materials
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('SELECT name FROM materials WHERE name = ?', (result_name,))
+        is_discovery = cursor.fetchone() is None
+        conn.close()
+        
+        # Spawn background task for embedding generation and logging
+        thread = threading.Thread(
+            target=_background_add_material_and_log,
+            args=(first_word, second_word, result_name, result_emoji, username, is_discovery),
+            daemon=True
+        )
+        thread.start()
+        
+        # Return result immediately (thread continues in background)
+        return {'result': result_name, 'emoji': result_emoji}
     
     # Return empty result if generation failed
     return {'result': '', 'emoji': ''}
@@ -132,41 +279,42 @@ def get_nodes_and_edges():
     print("Fetching graph data from database...")
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute('SELECT first_word, second_word, result, emoji FROM word_cache')
+    cursor.execute('SELECT firstWord, secondWord, resultName, resultEmoji FROM combinations')
     rows = cursor.fetchall()
     conn.close()
 
     nodes = {}
     edges = []
     
-    # Add special base nodes that may not appear in cache
-    special_nodes = {
-        'Fire': '🔥',
-        'Water': '💧',
-        'Earth': '🌍',
-        'Air': '💨'
-    }
-    for node_name, emoji in special_nodes.items():
-        nodes[node_name] = {'id': node_name, 'label': node_name, 'emoji': emoji}
+    # Get all materials from database
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT name, emoji FROM materials')
+    materials = cursor.fetchall()
+    conn.close()
     
+    # Add all materials as nodes
+    for material in materials:
+        nodes[material['name']] = {'id': material['name'], 'label': material['name'], 'emoji': material['emoji']}
+    
+    # Add edges from combinations
     for row in rows:
-        first_word = row['first_word']
-        second_word = row['second_word']
-        result = row['result']
-        emoji = row['emoji']
+        first_word = row['firstWord']
+        second_word = row['secondWord']
+        result_name = row['resultName']
         
-        # Add nodes
+        # Ensure nodes exist
         if first_word not in nodes:
             nodes[first_word] = {'id': first_word, 'label': first_word, 'emoji': get_emoji_by_word(first_word)}
         if second_word not in nodes:
             nodes[second_word] = {'id': second_word, 'label': second_word, 'emoji': get_emoji_by_word(second_word)}
-        if result not in nodes:
-            nodes[result] = {'id': result, 'label': result, 'emoji': emoji}
+        if result_name not in nodes:
+            result_emoji = row['resultEmoji']
+            nodes[result_name] = {'id': result_name, 'label': result_name, 'emoji': result_emoji}
         
         # Add edge
-        # edges.append({'from': first_word, 'to': result})
-        # edges.append({'from': second_word, 'to': result})
-        edges.append({'from1': first_word, 'from2': second_word, 'to': result})
+        edges.append({'from1': first_word, 'from2': second_word, 'to': result_name})
+    
     print(f"Fetched {len(nodes)} nodes and {len(edges)} edges.")
     return list(nodes.values()), edges
 
@@ -176,17 +324,17 @@ def get_graph_data():
     return jsonify({'nodes': nodes, 'links': edges})
 
 @app.route('/', methods=['GET'])
-def get_default_combinations():
-    """Get the 6 default element combinations"""
-    combinations = {
-        'Water + Fire': craft_new_word('Water', 'Fire'),
-        'Water + Earth': craft_new_word('Water', 'Earth'),
-        'Fire + Earth': craft_new_word('Fire', 'Earth'),
-        'Water + Air': craft_new_word('Water', 'Air'),
-        'Earth + Air': craft_new_word('Earth', 'Air'),
-        'Fire + Air': craft_new_word('Fire', 'Air')
-    }
-    return jsonify(combinations)
+def get_available_materials():
+    """Get all discovered materials"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT name, emoji FROM materials ORDER BY name')
+    materials = cursor.fetchall()
+    conn.close()
+    
+    return jsonify({
+        'materials': [{'name': m['name'], 'emoji': m['emoji']} for m in materials]
+    })
 
 @app.route('/', methods=['POST'])
 def combine_custom_words():
@@ -198,6 +346,7 @@ def combine_custom_words():
     
     first_word = data['first'].strip().lower()
     second_word = data['second'].strip().lower()
+    username = data.get('username', 'anonymous')
     
     if not first_word or not second_word:
         return jsonify({'error': 'Words cannot be empty'}), 400
@@ -206,7 +355,7 @@ def combine_custom_words():
     first_word = first_word[0].upper() + first_word[1:] if first_word else ''
     second_word = second_word[0].upper() + second_word[1:] if second_word else ''
     
-    result = craft_new_word(first_word, second_word)
+    result = craft_new_word(first_word, second_word, username)
     return jsonify(result)
 
 @app.route('/health', methods=['GET'])
