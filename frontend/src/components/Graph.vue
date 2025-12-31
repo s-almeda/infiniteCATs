@@ -292,7 +292,8 @@ function resetZoom() {
 async function loadGraphData() {
   console.log("Loading graph data...");
   try {
-    const res = await fetch("http://localhost:3000/api/graph");
+    const apiUrl = import.meta.env.VITE_FLASK_API_URL || 'http://localhost:3000'
+    const res = await fetch(`${apiUrl}/api/graph`);
     if (!res.ok) {
       console.error("Failed to fetch graph data:", res.status);
       return;
