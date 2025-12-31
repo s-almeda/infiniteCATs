@@ -20,7 +20,7 @@ const props = defineProps<{
 const store = useBoxesStore()
 const {removeBox, addBox} = store
 const {resources} = storeToRefs(useResourcesStore())
-const {addResource} = useResourcesStore()
+const {addResource, triggerCombinationEvent} = useResourcesStore()
 const {username, isLoggedIn} = storeToRefs(useUserStore())
 
 const [, drop] = useDrop(() => ({
@@ -74,6 +74,9 @@ const [, drop] = useDrop(() => ({
         })
       }
       removeBox(props.id);
+      
+      // Trigger graph update after combination
+      triggerCombinationEvent();
     }
   },
 }))

@@ -387,8 +387,11 @@ onMounted(async () => {
 });
 
 // Watch for combination events and reload graph
-watch(combinationCount, () => {
-  console.log("Combination detected, reloading graph...");
+watch(combinationCount, async () => {
+  console.log("Combination detected, waiting for database to update...");
+  // Wait 500ms for database to update
+  await new Promise(resolve => setTimeout(resolve, 500));
+  console.log("Reloading graph...");
   loadGraphData();
 });
 
