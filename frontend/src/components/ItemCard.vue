@@ -77,7 +77,7 @@ const [, drop] = useDrop(() => ({
 </script>
 <template>
   <div :ref="drop"
-       :class="twMerge(props.size === 'large' ? 'text-2xl space-x-2.5 py-2.5 px-4' : 'space-x-1.5 px-3 py-1','border-gray-200 bg-white shadow hover:bg-gray-100 cursor-pointer transition inline-block font-medium border rounded-lg')">
+       :class="twMerge(props.size === 'large' ? 'text-2xl space-x-2.5 py-2.5 px-4' : 'space-x-1.5 px-3 py-1','border-gray-200 bg-white shadow hover:bg-gray-100 cursor-pointer transition inline-flex items-center whitespace-nowrap font-medium border rounded-lg')">
     <span>
       {{ emoji }}
     </span>
