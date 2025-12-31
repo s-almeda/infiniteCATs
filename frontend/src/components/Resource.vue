@@ -14,6 +14,7 @@ import ItemCard from "@/components/ItemCard.vue";
 const props = defineProps<{
   emoji: string
   title: string
+  isNewDiscovery?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -36,7 +37,8 @@ const handleClick = () => {
 
 <template>
   <div
-      class="inline-block cursor-pointer"
+      class="inline-block cursor-pointer rounded-lg"
+      :class="{'ring-2 ring-orange-300': isNewDiscovery}"
       :ref="drag"
       role="Box"
       data-testid="box"

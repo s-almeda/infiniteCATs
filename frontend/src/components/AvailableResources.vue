@@ -56,6 +56,7 @@ const handleResourceClick = (title: string, emoji: string) => {
       :key="resource.title" 
       :title="resource.title"  
       :emoji="resource.emoji"
+      :isNewDiscovery="resource.isNewDiscovery"
       @click="handleResourceClick(resource.title, resource.emoji)"
     ></Resource>
   </div>

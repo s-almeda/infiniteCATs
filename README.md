@@ -96,22 +96,30 @@ perUserRank     INTEGER             (max rank of parents + 1)
 isDiscovery     BOOLEAN             (true if first time this result was found)
 ```
 
-## When a user combines 2 materials:**
+## When a user combines 2 materials:
 
-1. Flask receives POST `/` with `{first, second, username}`
+1. **Frontend** detects drop event in ItemCard.vue
+   - Always POST to `/` with `{first, second, username}`
+   - `username` = extracted from `?user=` URL param if present, else `null`
 
-2. (Frontend returns result immediately):
-   - Check if combination already cached in database
-   - If cached, return cached result
+2. **Backend** processes request immediately:
+   - Check if combination already cached in `combinations` table
+   - If cached, return cached result immediately
    - If not cached, call LLM to generate new combination
-   - Return result to user (this takes ~1-2 seconds)
+   - Return `{result, emoji, isDiscovery}` to frontend (takes ~1-2 seconds)
 
-3. **Background thread spawns** (happens simultaneously):
-   - Generates embedding for the new material using MiniLM (384 dimensions)
-   - Add material to `materials` table with embedding (if new discovery)
-   - Calculate `perUserRank` based on parent materials
-   - Log the combination event in `combinations` table
-   - Set `isDiscovery=true` if this was the first time finding this result
+3. **Conditional logging** (based on whether username exists):
+   - **If username provided:** Spawn background thread to:
+     - Generate embedding for new material using MiniLM (384 dimensions)
+     - Add material to `materials` table with embedding (if new discovery)
+     - Calculate `perUserRank` based on parent materials
+     - Log combination event in `combinations` table with `isDiscovery` flag
+   - **If username is null:** Skip all database operations, just return LLM result
+
+4. **Frontend updates UI:**
+   - Add new item to boxes (visual drag-drop item)
+   - If `isDiscovery=true`, add item to resources list with orange ring border
+   - If `isDiscovery=false` or null, add item without special styling
 
 
 ### Frontend (Vue 3/TypeScript)
@@ -158,12 +166,23 @@ Combine two words.
 ```
 Request:
 POST /
-{ "first": "Water", "second": "Fire", "username": "player1" }
+{
+  "first": "Water",
+  "second": "Fire",
+  "username": "player1"    // optional: null if not logged in
+}
 
 Response (immediate):
-{ "result": "Steam", "emoji": "🌫️" }
+{
+  "result": "Steam",
+  "emoji": "🌫️",
+  "isDiscovery": true      // only set if username provided
+}
 ```
-⚠️ **Note:** Response returns immediately. Embedding generation and database logging happen in background.
+**Behavior:**
+- Always returns result immediately (LLM takes ~1-2 seconds)
+- If `username` provided: logs to database + calculates `isDiscovery`
+- If `username` null: skips database logging, `isDiscovery` = false
 
 ### `GET /api/graph`
 Get all materials and their combination relationships.

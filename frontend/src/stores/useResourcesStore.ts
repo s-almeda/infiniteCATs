@@ -1,15 +1,25 @@
 import {ref} from 'vue'
 import {defineStore} from 'pinia'
 import {useLocalStorage} from "@vueuse/core";
+import {useUserStore} from './useUserStore';
 
 export interface ResourceStoreEntry {
     title: string
     emoji: string
+    isNewDiscovery?: boolean
 }
 
 export const useResourcesStore = defineStore('resources', () => {
+    const userStore = useUserStore();
+    
+    // Generate storage key based on username (or "anonymous" if no user)
+    const getStorageKey = () => {
+        const username = userStore.username || 'anonymous';
+        return `opencraft/resources/${username}`;
+    };
+    
     const resources =
-            useLocalStorage<ResourceStoreEntry[]>('opencraft/resources', [
+            useLocalStorage<ResourceStoreEntry[]>(getStorageKey(), [
                 {title: 'Fire', emoji: '🔥'},
                 {title: 'Water', emoji: '💧'},
                 {title: 'Earth', emoji: '🌍'},

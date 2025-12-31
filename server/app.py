@@ -228,23 +228,27 @@ def _background_add_material_and_log(first_word: str, second_word: str, result_n
     except Exception as e:
         print(f"Error in background task: {e}")
 
-def craft_new_word(first_word: str, second_word: str, username: str = "anonymous") -> dict:
+def craft_new_word(first_word: str, second_word: str, username: str = None) -> dict:
     """
     Craft a new word by combining two words.
     Checks cache first, then generates using LLM if not cached.
-    Returns result immediately; embedding/logging happens in background.
+    Returns result immediately with isDiscovery flag.
+    
+    If username is provided, spawns background task to log to database.
+    If username is None, just returns LLM result without any database logging.
     """
     # Check cache
     cached = get_cached_combination(first_word, second_word)
     if cached:
-        # Spawn background task to log the cached combination
-        thread = threading.Thread(
-            target=_background_add_material_and_log,
-            args=(first_word, second_word, cached['result'], cached['emoji'], username, False),
-            daemon=True
-        )
-        thread.start()
-        return cached
+        # Spawn background task to log only if username is provided
+        if username:
+            thread = threading.Thread(
+                target=_background_add_material_and_log,
+                args=(first_word, second_word, cached['result'], cached['emoji'], username, False),
+                daemon=True
+            )
+            thread.start()
+        return {**cached, 'isDiscovery': False}
     
     # Generate new combination
     combination = generate_combination(first_word, second_word)
@@ -253,26 +257,29 @@ def craft_new_word(first_word: str, second_word: str, username: str = "anonymous
         result_name = combination['result']
         result_emoji = combination['emoji']
         
-        # Check if this result already exists in materials
-        conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute('SELECT name FROM materials WHERE name = ?', (result_name,))
-        is_discovery = cursor.fetchone() is None
-        conn.close()
+        # Only check discovery status if username is provided
+        is_discovery = False
+        if username:
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute('SELECT name FROM materials WHERE name = ?', (result_name,))
+            is_discovery = cursor.fetchone() is None
+            conn.close()
         
-        # Spawn background task for embedding generation and logging
-        thread = threading.Thread(
-            target=_background_add_material_and_log,
-            args=(first_word, second_word, result_name, result_emoji, username, is_discovery),
-            daemon=True
-        )
-        thread.start()
+        # Spawn background task for embedding generation and logging only if username is provided
+        if username:
+            thread = threading.Thread(
+                target=_background_add_material_and_log,
+                args=(first_word, second_word, result_name, result_emoji, username, is_discovery),
+                daemon=True
+            )
+            thread.start()
         
-        # Return result immediately (thread continues in background)
-        return {'result': result_name, 'emoji': result_emoji}
+        # Return result immediately with isDiscovery flag
+        return {'result': result_name, 'emoji': result_emoji, 'isDiscovery': is_discovery}
     
     # Return empty result if generation failed
-    return {'result': '', 'emoji': ''}
+    return {'result': '', 'emoji': '', 'isDiscovery': False}
 
 def get_nodes_and_edges():
     """Retrieve all nodes and edges for graph visualization"""
@@ -346,7 +353,7 @@ def combine_custom_words():
     
     first_word = data['first'].strip().lower()
     second_word = data['second'].strip().lower()
-    username = data.get('username', 'anonymous')
+    username = data.get('username')  # None if not provided
     
     if not first_word or not second_word:
         return jsonify({'error': 'Words cannot be empty'}), 400
