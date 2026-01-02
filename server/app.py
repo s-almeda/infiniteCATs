@@ -285,8 +285,22 @@ def get_material_distance_to_avg(material1: str, material2: str, material3: str)
     sim1 = (1 - cosine_similarity(embedding1, avg_embedding))/2
     sim2 = (1 - cosine_similarity(embedding2, avg_embedding))/2
     sim3 = (1 - cosine_similarity(embedding3, avg_embedding))/2
-    print(f"Distances to avg for {material1}, {material2}, {material3}: {sim1}, {sim2}, {sim3}")
+    # print(f"Distances to avg for {material1}, {material2}, {material3}: {sim1}, {sim2}, {sim3}")
     return (sim1, sim2, sim3)
+
+def get_material_distance_LA(material1: str, material2: str, material3: str) -> tuple[float, float, float]:
+    """ calculate the distances needed for the ternary connection so that the sum of each route is the distance between the two materials """
+    ab = get_material_distance(material1, material2).get('similarity')
+    ac = get_material_distance(material1, material3).get('similarity')
+    bc = get_material_distance(material2, material3).get('similarity')
+    try:
+        c = (bc + ac - ab) / 2
+        a = ac - c
+        b = ab - ac + c
+        return (a, b, c)
+    except Exception as e:
+        print(f"Error calculating LA distances for {material1}, {material2}, {material3}: {ab}, {ac}, {bc} -- {e}")
+        return (None, None, None)
 
 def _background_add_material_and_log(first_word: str, second_word: str, result_name: str, result_emoji: str, username: str, is_discovery: bool):
     """Background task: generate embedding, add material, and log combination"""
@@ -355,23 +369,30 @@ def craft_new_word(first_word: str, second_word: str, username: str = None) -> d
     # Return empty result if generation failed
     return {'result': '', 'emoji': '', 'isDiscovery': False}
 
-def get_nodes_and_edges(username: str | None = None):
-    """Retrieve graph nodes/edges filtered by username when provided."""
+def get_nodes_and_edges(username: str | None = None, percentage: float = 100.0):
+    """Retrieve graph nodes/edges filtered by username and percentage of rows."""
     scope = f"user={username}" if username else "all users"
-    print(f"Fetching graph data from database for {scope}...")
+    print(f"Fetching graph data from database for {scope} at {percentage}% progress...")
 
     # Pull combinations scoped to a specific user when username is provided
     conn = get_db()
     cursor = conn.cursor()
     if username:
         cursor.execute(
-            'SELECT firstWord, secondWord, resultName, resultEmoji FROM combinations WHERE username = ?',
+            'SELECT firstWord, secondWord, resultName, resultEmoji FROM combinations WHERE username = ? ORDER BY id',
             (username,)
         )
     else:
-        cursor.execute('SELECT firstWord, secondWord, resultName, resultEmoji FROM combinations')
+        cursor.execute('SELECT firstWord, secondWord, resultName, resultEmoji FROM combinations ORDER BY id')
     rows = cursor.fetchall()
     conn.close()
+    
+    # Apply percentage filter - only use first N% of rows
+    if percentage < 100.0:
+        total_rows = len(rows)
+        rows_to_use = max(1, int(total_rows * (percentage / 100.0)))
+        rows = rows[:rows_to_use]
+        print(f"Using {rows_to_use} of {total_rows} rows ({percentage}%)")
 
     nodes: dict[str, dict] = {}
     edges = []
@@ -415,7 +436,9 @@ def get_nodes_and_edges(username: str | None = None):
             nodes[result_name] = {'id': result_name, 'label': result_name, 'emoji': result_emoji}
 
         # Calculate distance between materials and their average
-        distancefrom1, distancefrom2, distanceto = get_material_distance_to_avg(first_word, second_word, result_name)
+        # distancefrom1, distancefrom2, distanceto = get_material_distance_to_avg(first_word, second_word, result_name)
+        distancefrom1, distancefrom2, distanceto = get_material_distance_LA(first_word, second_word, result_name)
+
 
         edges.append({
             'from1': first_word,
@@ -432,7 +455,8 @@ def get_nodes_and_edges(username: str | None = None):
 @app.route('/api/graph', methods=['GET'])
 def get_graph_data():
     username = request.args.get('username')
-    nodes, edges = get_nodes_and_edges(username)
+    percentage = request.args.get('percentage', 100.0, type=float)
+    nodes, edges = get_nodes_and_edges(username, percentage)
     return jsonify({'nodes': nodes, 'links': edges})
 
 @app.route('/', methods=['GET'])

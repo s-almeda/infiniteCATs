@@ -31,6 +31,7 @@ const dragStartPos = ref({ x: 0, y: 0 });
 const zoomLevel = ref(1);
 const panX = ref(0);
 const panY = ref(0);
+const timePercentage = ref(100);
 let expandedNodes = [];
 let expandedLinks = [];
 let isPanning = false;
@@ -296,9 +297,14 @@ async function loadGraphData() {
   console.log("Loading graph data...");
   try {
     const apiUrl = import.meta.env.VITE_FLASK_API_URL || 'http://localhost:3000'
-    const query = isLoggedIn.value && username.value
+    let query = isLoggedIn.value && username.value
       ? `?username=${encodeURIComponent(username.value)}`
       : '';
+    
+    // Add percentage parameter
+    const percentageParam = `percentage=${timePercentage.value}`;
+    query = query ? `${query}&${percentageParam}` : `?${percentageParam}`;
+    
     const res = await fetch(`${apiUrl}/api/graph${query}`);
     if (!res.ok) {
       console.error("Failed to fetch graph data:", res.status);
@@ -427,6 +433,12 @@ watch([panX, panY], () => {
   }
 });
 
+// Watch time percentage slider and reload graph
+watch(timePercentage, () => {
+  console.log(`Time slider changed to ${timePercentage.value}%`);
+  loadGraphData();
+});
+
 onBeforeUnmount(() => {
   simulation?.stop();
   cancelAnimationFrame(animationFrame);
@@ -458,6 +470,19 @@ onBeforeUnmount(() => {
       <button @click="zoomIn" class="bg-blue-500 text-white px-3 py-1 rounded text-sm hover:bg-blue-600">+</button>
       <button @click="resetZoom" class="bg-gray-500 text-white px-3 py-1 rounded text-sm hover:bg-gray-600">Reset</button>
       <button @click="zoomOut" class="bg-blue-500 text-white px-3 py-1 rounded text-sm hover:bg-blue-600">−</button>
+    </div>
+    <div class="absolute bottom-2 left-2 right-2 bg-white border border-gray-300 rounded px-4 py-3 shadow" @wheel.stop @mousedown.stop>
+      <div class="flex items-center gap-3">
+        <label class="text-sm font-medium whitespace-nowrap">Timeline: {{ timePercentage }}%</label>
+        <input 
+          type="range" 
+          v-model="timePercentage" 
+          min="1" 
+          max="100" 
+          step="1"
+          class="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+        />
+      </div>
     </div>
   </div>
 </template>
