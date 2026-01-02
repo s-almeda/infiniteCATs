@@ -364,9 +364,9 @@ async function loadGraphData() {
         forceLink(normalizedLinks)
           .distance(l => {
             //debug log link with distance
-            console.log("Link distance:", l.distance);
-            const maxDistance = 400;
-            const minDistance = 20;
+            // console.log("Link distance:", l.distance);
+            const maxDistance = 300;
+            const minDistance = 10;
             return minDistance + l.distance * (maxDistance - minDistance);
             // // Use distance values from API if available, otherwise use defaults
             // if (l.distance !== undefined && l.distance !== null) {

@@ -290,13 +290,39 @@ def get_material_distance_to_avg(material1: str, material2: str, material3: str)
 
 def get_material_distance_LA(material1: str, material2: str, material3: str) -> tuple[float, float, float]:
     """ calculate the distances needed for the ternary connection so that the sum of each route is the distance between the two materials """
-    ab = get_material_distance(material1, material2).get('similarity')
-    ac = get_material_distance(material1, material3).get('similarity')
-    bc = get_material_distance(material2, material3).get('similarity')
+    # ab = get_material_distance(material1, material2).get('similarity')
+    # ac = get_material_distance(material1, material3).get('similarity')
+    # bc = get_material_distance(material2, material3).get('similarity')
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Retrieve embeddings for all three materials
+    cursor.execute('SELECT embedding FROM materials WHERE name = ?', (material1,))
+    result1 = cursor.fetchone()
+    
+    cursor.execute('SELECT embedding FROM materials WHERE name = ?', (material2,))
+    result2 = cursor.fetchone()
+    
+    cursor.execute('SELECT embedding FROM materials WHERE name = ?', (material3,))
+    result3 = cursor.fetchone()
+    
+    conn.close()
+    
+    if not result1 or not result2 or not result3:
+        return (None, None, None)
+    
+    # Deserialize embeddings from BLOB (float32 array)
+    embedding1 = np.frombuffer(result1['embedding'], dtype=np.float32)
+    embedding2 = np.frombuffer(result2['embedding'], dtype=np.float32)
+    embedding3 = np.frombuffer(result3['embedding'], dtype=np.float32)
+    ab = float(np.linalg.norm(embedding1 - embedding2))
+    ac = float(np.linalg.norm(embedding1 - embedding3))
+    bc = float(np.linalg.norm(embedding2 - embedding3))
     try:
         c = (bc + ac - ab) / 2
         a = ac - c
         b = ab - ac + c
+        # print(f"LA Distances for {material1}, {material2}, {material3}: {a}, {b}, {c}")
         return (a, b, c)
     except Exception as e:
         print(f"Error calculating LA distances for {material1}, {material2}, {material3}: {ab}, {ac}, {bc} -- {e}")
