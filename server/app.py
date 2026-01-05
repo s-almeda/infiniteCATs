@@ -405,20 +405,28 @@ def get_nodes_and_edges(username: str | None = None, percentage: float = 100.0):
     cursor = conn.cursor()
     if username:
         cursor.execute(
-            'SELECT firstWord, secondWord, resultName, resultEmoji FROM combinations WHERE username = ? ORDER BY id',
+            'SELECT id, firstWord, secondWord, resultName, resultEmoji, perUserRank FROM combinations WHERE username = ? ORDER BY id',
             (username,)
         )
     else:
-        cursor.execute('SELECT firstWord, secondWord, resultName, resultEmoji FROM combinations ORDER BY id')
+        cursor.execute('SELECT id, firstWord, secondWord, resultName, resultEmoji, perUserRank FROM combinations ORDER BY id')
     rows = cursor.fetchall()
     conn.close()
     
     # Apply percentage filter - only use first N% of rows
+    goal_material = None
     if percentage < 100.0:
         total_rows = len(rows)
         rows_to_use = max(1, int(total_rows * (percentage / 100.0)))
         rows = rows[:rows_to_use]
-        print(f"Using {rows_to_use} of {total_rows} rows ({percentage}%)")
+        # The goal material is the last material created
+        if rows:
+            goal_material = rows[-1]['resultName']
+        print(f"Using {rows_to_use} of {total_rows} rows ({percentage}%), goal: {goal_material}")
+    else:
+        # If showing all rows, goal is the last one
+        if rows:
+            goal_material = rows[-1]['resultName']
 
     nodes: dict[str, dict] = {}
     edges = []
@@ -447,11 +455,14 @@ def get_nodes_and_edges(username: str | None = None, percentage: float = 100.0):
             'emoji': material['emoji']
         }
 
-    # Add edges from combinations and ensure nodes exist
+    # Build edges and recipe map (for finding shortest path to goal)
+    recipe_map = {}  # material -> (component1, component2, perUserRank)
+    
     for row in rows:
         first_word = row['firstWord']
         second_word = row['secondWord']
         result_name = row['resultName']
+        per_user_rank = row['perUserRank']
 
         if first_word not in nodes:
             nodes[first_word] = {'id': first_word, 'label': first_word, 'emoji': get_emoji_by_word(first_word) or '❓'}
@@ -461,10 +472,12 @@ def get_nodes_and_edges(username: str | None = None, percentage: float = 100.0):
             result_emoji = row['resultEmoji']
             nodes[result_name] = {'id': result_name, 'label': result_name, 'emoji': result_emoji}
 
-        # Calculate distance between materials and their average
-        # distancefrom1, distancefrom2, distanceto = get_material_distance_to_avg(first_word, second_word, result_name)
-        distancefrom1, distancefrom2, distanceto = get_material_distance_LA(first_word, second_word, result_name)
+        # Track recipe with lowest perUserRank for each material
+        if result_name not in recipe_map or per_user_rank < recipe_map[result_name][2]:
+            recipe_map[result_name] = (first_word, second_word, per_user_rank)
 
+        # Calculate distance between materials and their average
+        distancefrom1, distancefrom2, distanceto = get_material_distance_LA(first_word, second_word, result_name)
 
         edges.append({
             'from1': first_word,
@@ -474,16 +487,28 @@ def get_nodes_and_edges(username: str | None = None, percentage: float = 100.0):
             'distanceFrom2': distancefrom2,
             'distanceTo': distanceto
         })
+    
+    # Find recipe path to goal material (shortest path with lowest perUserRank)
+    recipe_path = set()
+    if goal_material:
+        def trace_recipe(material):
+            if material in recipe_map:
+                comp1, comp2, _ = recipe_map[material]
+                recipe_path.add((comp1, comp2, material))
+                trace_recipe(comp1)
+                trace_recipe(comp2)
+        
+        trace_recipe(goal_material)
 
-    print(f"Fetched {len(nodes)} nodes and {len(edges)} edges for {scope}.")
-    return list(nodes.values()), edges
+    print(f"Fetched {len(nodes)} nodes and {len(edges)} edges for {scope}. Recipe path: {len(recipe_path)} edges")
+    return list(nodes.values()), edges, list(recipe_path)
     
 @app.route('/api/graph', methods=['GET'])
 def get_graph_data():
     username = request.args.get('username')
     percentage = request.args.get('percentage', 100.0, type=float)
-    nodes, edges = get_nodes_and_edges(username, percentage)
-    return jsonify({'nodes': nodes, 'links': edges})
+    nodes, edges, recipe_path = get_nodes_and_edges(username, percentage)
+    return jsonify({'nodes': nodes, 'links': edges, 'recipePath': recipe_path})
 
 @app.route('/', methods=['GET'])
 def get_available_materials():

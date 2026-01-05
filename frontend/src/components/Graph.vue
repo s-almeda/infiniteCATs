@@ -34,6 +34,8 @@ const panY = ref(0);
 const timePercentage = ref(100);
 let expandedNodes = [];
 let expandedLinks = [];
+let recipePathEdges = new Set();
+let recipeToComboNodeId = {};  // Map from "comp1_comp2_result" to combNode id
 let isPanning = false;
 let panStartX = 0;
 let panStartY = 0;
@@ -48,15 +50,29 @@ function draw(nodes, links) {
   ctx.scale(zoomLevel.value, zoomLevel.value);
   ctx.translate(-width.value / 2, -height.value / 2);
 
-  // links
+  // links - draw normal links in gray
   ctx.strokeStyle = "#888";
   ctx.beginPath();
   links.forEach(l => {
-    ctx.moveTo(l.source.x, l.source.y);
-    ctx.lineTo(l.target.x, l.target.y);
-    
+    if (!isRecipePathLink(l)) {
+      ctx.moveTo(l.source.x, l.source.y);
+      ctx.lineTo(l.target.x, l.target.y);
+    }
   });
   ctx.stroke();
+
+  // recipe path links in red
+  ctx.strokeStyle = "#ff0000";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  links.forEach(l => {
+    if (isRecipePathLink(l)) {
+      ctx.moveTo(l.source.x, l.source.y);
+      ctx.lineTo(l.target.x, l.target.y);
+    }
+  });
+  ctx.stroke();
+  ctx.lineWidth = 1;
 
   // arrowheads for direction
   links.forEach(l => {
@@ -111,6 +127,25 @@ function draw(nodes, links) {
   });
   
   ctx.restore();
+}
+
+function isRecipePathLink(link) {
+  // Check if this link is part of the recipe path
+  // We need to check if the link is one of the three edges in a recipe path triple
+  for (const [comp1, comp2, result] of recipePathEdges) {
+    const recipeKey = `${comp1}_${comp2}_${result}`;
+    const combNodeId = recipeToComboNodeId[recipeKey];
+    
+    if (combNodeId) {
+      // Check if link is one of: comp1->combNode, comp2->combNode, combNode->result
+      if ((link.source.id === comp1 && link.target.id === combNodeId) ||
+          (link.source.id === comp2 && link.target.id === combNodeId) ||
+          (link.source.id === combNodeId && link.target.id === result)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function screenToCanvasCoords(screenX, screenY) {
@@ -310,8 +345,12 @@ async function loadGraphData() {
       console.error("Failed to fetch graph data:", res.status);
       return;
     }
-    const { nodes, links } = await res.json();
-    console.log("Loaded graph data:", { nodes, links });
+    const { nodes, links, recipePath } = await res.json();
+    console.log("Loaded graph data:", { nodes, links, recipePath });
+
+    // Store recipe path for highlighting
+    recipePathEdges = new Set(recipePath.map(p => [p[0], p[1], p[2]]));
+    recipeToComboNodeId = {};  // Reset the mapping
 
     // cache nodes for hover detection
     storedNodes.value = nodes;
@@ -341,6 +380,10 @@ async function loadGraphData() {
         type: "combination"
       };
       expandedNodes.push(combNode);
+      
+      // Store mapping for recipe path highlighting
+      const recipeKey = `${l.from1}_${l.from2}_${l.to}`;
+      recipeToComboNodeId[recipeKey] = combId;
 
       // Create links with distance data: source1 → combination, source2 → combination, combination → target
       console.log("Creating expanded links for combination:", l);
