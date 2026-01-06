@@ -36,6 +36,7 @@ let expandedNodes = [];
 let expandedLinks = [];
 let recipePathEdges = new Set();
 let recipeToComboNodeId = {};  // Map from "comp1_comp2_result" to combNode id
+let recipeMap = {};  // Map from result material to [comp1, comp2, rank]
 let isPanning = false;
 let panStartX = 0;
 let panStartY = 0;
@@ -210,9 +211,39 @@ function onMouseMove(event) {
   hoverNode.value = hit ? hit.label || hit.id || hit.name : null;
 }
 
+function findPathToNode(targetMaterial) {
+  // Trace back the recipe path to the target material
+  const path = new Set();
+  
+  function trace(material) {
+    if (recipeMap[material]) {
+      const [comp1, comp2] = recipeMap[material];
+      path.add([comp1, comp2, material]);
+      trace(comp1);
+      trace(comp2);
+    }
+  }
+  
+  trace(targetMaterial);
+  return path;
+}
+
+function updateRecipePath(targetMaterial) {
+  // Update the recipe path to highlight the path to the target material
+  recipePathEdges = findPathToNode(targetMaterial);
+  
+  // Redraw the graph with the new recipe path
+  if (expandedNodes.length > 0 && expandedLinks.length > 0) {
+    draw(expandedNodes, expandedLinks);
+  }
+}
+
 function handleNodeClick(node) {
-  // Only add non-combination nodes to canvas
+  // Only handle non-combination nodes
   if (node.type === "combination") return;
+
+  // Update the recipe path to this node
+  updateRecipePath(node.id);
 
   // Get container dimensions for centering
   const containerWidth = window.innerWidth * 0.75;
@@ -348,7 +379,15 @@ async function loadGraphData() {
     const { nodes, links, recipePath } = await res.json();
     console.log("Loaded graph data:", { nodes, links, recipePath });
 
-    // Store recipe path for highlighting
+    // Build recipe map for finding paths to any node
+    recipeMap = {};
+    links.forEach(l => {
+      if (!recipeMap[l.to]) {
+        recipeMap[l.to] = [l.from1, l.from2];
+      }
+    });
+
+    // Store recipe path for highlighting (initially the default path from API)
     recipePathEdges = new Set(recipePath.map(p => [p[0], p[1], p[2]]));
     recipeToComboNodeId = {};  // Reset the mapping
 
