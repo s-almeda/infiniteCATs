@@ -493,8 +493,8 @@ def get_nodes_and_edges(username: str | None = None):
         def trace_recipe(material, depth):
             if material in recipe_map:
                 comp1, comp2, d = recipe_map[material]
-                if d >= depth and depth != -1:
-                    print(f"expected depth to be less than {depth} but got {d} for {material}")
+                if d > depth and depth != -1:
+                    print(f"expected depth to be leq {depth} but got {d} for {material}")
                 recipe_path.add((comp1, comp2, material))
                 trace_recipe(comp1, d - 1)
                 trace_recipe(comp2, d - 1)
