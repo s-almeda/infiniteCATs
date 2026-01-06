@@ -203,11 +203,12 @@ def get_per_user_rank(first_word: str, second_word: str, username: str) -> int:
     cursor = conn.cursor()
     
     # Get min rank of the two parent words for this user (default to 0 for base elements)
-    cursor.execute('SELECT MIN(perUserRank) as min_rank FROM combinations WHERE resultName = ? AND username = ?', (first_word, username))
+    # Use COLLATE NOCASE for case-insensitive matching to handle materials with spaces and different casing
+    cursor.execute('SELECT MIN(perUserRank) as min_rank FROM combinations WHERE resultName = ? COLLATE NOCASE AND username = ?', (first_word, username))
     first_rank_result = cursor.fetchone()
     first_rank = first_rank_result['min_rank'] if first_rank_result['min_rank'] is not None else 0
     
-    cursor.execute('SELECT MIN(perUserRank) as min_rank FROM combinations WHERE resultName = ? AND username = ?', (second_word, username))
+    cursor.execute('SELECT MIN(perUserRank) as min_rank FROM combinations WHERE resultName = ? COLLATE NOCASE AND username = ?', (second_word, username))
     second_rank_result = cursor.fetchone()
     second_rank = second_rank_result['min_rank'] if second_rank_result['min_rank'] is not None else 0
     
@@ -431,38 +432,48 @@ def get_nodes_and_edges(username: str | None = None, percentage: float = 100.0):
     nodes: dict[str, dict] = {}
     edges = []
 
-    # Always include base materials
+    # Always include base materials as nodes first
     base_materials = ['Fire', 'Water', 'Earth', 'Air']
-    needed_names = set(base_materials)
-
-    for row in rows:
-        needed_names.update([row['firstWord'], row['secondWord'], row['resultName']])
-
-    # Fetch emojis for needed materials in a single query
-    materials = []
-    if needed_names:
-        placeholders = ','.join(['?'] * len(needed_names))
-        conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute(f'SELECT name, emoji FROM materials WHERE name IN ({placeholders})', tuple(needed_names))
-        materials = cursor.fetchall()
-        conn.close()
-
-    for material in materials:
-        nodes[material['name']] = {
-            'id': material['name'],
-            'label': material['name'],
-            'emoji': material['emoji']
+    for base_mat in base_materials:
+        emoji = get_emoji_by_word(base_mat) or '❓'
+        nodes[base_mat] = {
+            'id': base_mat,
+            'label': base_mat,
+            'emoji': emoji
         }
+    
+    # needed_names = set(base_materials)
+
+    # for row in rows:
+    #     needed_names.update([row['firstWord'], row['secondWord'], row['resultName']])
+
+    # # Fetch emojis for needed materials in a single query
+    # materials = []
+    # if needed_names:
+    #     placeholders = ','.join(['?'] * len(needed_names))
+    #     conn = get_db()
+    #     cursor = conn.cursor()
+    #     cursor.execute(f'SELECT name, emoji FROM materials WHERE name IN ({placeholders})', tuple(needed_names))
+    #     materials = cursor.fetchall()
+    #     conn.close()
+
+    # # Update nodes with materials from database (overwrites base materials if they exist in DB)
+    # for material in materials:
+    #     nodes[material['name']] = {
+    #         'id': material['name'],
+    #         'label': material['name'],
+    #         'emoji': material['emoji']
+    #     }
 
     # Build edges and recipe map (for finding shortest path to goal)
     recipe_map = {}  # material -> (component1, component2, perUserRank)
     
     for row in rows:
-        first_word = row['firstWord']
-        second_word = row['secondWord']
-        result_name = row['resultName']
+        first_word = row['firstWord'].title()
+        second_word = row['secondWord'].title()
+        result_name = row['resultName'].title()
         per_user_rank = row['perUserRank']
+        print(f"Processing combination: {first_word} + {second_word} -> {result_name} (rank {per_user_rank})")
 
         if first_word not in nodes:
             nodes[first_word] = {'id': first_word, 'label': first_word, 'emoji': get_emoji_by_word(first_word) or '❓'}
@@ -491,14 +502,16 @@ def get_nodes_and_edges(username: str | None = None, percentage: float = 100.0):
     # Find recipe path to goal material (shortest path with lowest perUserRank)
     recipe_path = set()
     if goal_material:
-        def trace_recipe(material):
+        def trace_recipe(material, depth):
             if material in recipe_map:
-                comp1, comp2, _ = recipe_map[material]
+                comp1, comp2, d = recipe_map[material]
+                if d >= depth and depth != -1:
+                    print(f"expected depth to be less than {depth} but got {d} for {material}")
                 recipe_path.add((comp1, comp2, material))
-                trace_recipe(comp1)
-                trace_recipe(comp2)
+                trace_recipe(comp1, d - 1)
+                trace_recipe(comp2, d - 1)
         
-        trace_recipe(goal_material)
+        trace_recipe(goal_material, -1)
 
     print(f"Fetched {len(nodes)} nodes and {len(edges)} edges for {scope}. Recipe path: {len(recipe_path)} edges")
     return list(nodes.values()), edges, list(recipe_path)

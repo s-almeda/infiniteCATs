@@ -368,6 +368,8 @@ async function loadGraphData() {
 
       if (!sourceNode1 || !sourceNode2 || !targetNode) {
         console.warn("Could not resolve nodes for link:", l, { sourceNode1, sourceNode2, targetNode });
+        console.warn("Available node IDs:", expandedNodes.map(n => n.id));
+        // Skip this link instead of crashing
         return;
       }
 
@@ -406,20 +408,14 @@ async function loadGraphData() {
       .force("link",
         forceLink(normalizedLinks)
           .distance(l => {
-            //debug log link with distance
-            // console.log("Link distance:", l.distance);
-            const maxDistance = 300;
-            const minDistance = 10;
-            return minDistance + l.distance * (maxDistance - minDistance);
-            // // Use distance values from API if available, otherwise use defaults
-            // if (l.distance !== undefined && l.distance !== null) {
-            //   //expect distance to be between 0 and 1, map to 20-200 range
-            //   const maxDistance = 400;
-            //   const minDistance = 20;
-            //   return minDistance + l.distance * (maxDistance - minDistance);
-            // }
-            // // Fallback to original defaults if no distance data
-            // return l.source.type === "combination" || l.target.type === "combination" ? 40 : 80;
+            // Use distance values from API if available, otherwise use defaults
+            if (l.distance !== undefined && l.distance !== null && !isNaN(l.distance)) {
+              const maxDistance = 300;
+              const minDistance = 10;
+              return minDistance + l.distance * (maxDistance - minDistance);
+            }
+            // Fallback to default distance if no valid distance data
+            return 80;
           })
           .strength(0.8)
       )
