@@ -34,9 +34,12 @@ const panY = ref(0);
 const timePercentage = ref(100);
 let expandedNodes = [];
 let expandedLinks = [];
+let originalLinks = []; // Raw chronological links from API
+let allNodes = []; // All nodes from API
 let recipePathEdges = new Set();
 let recipeToComboNodeId = {};  // Map from "comp1_comp2_result" to combNode id
-let recipeMap = {};  // Map from result material to [comp1, comp2, rank]
+let currentRecipeMap = {};  // Active timeline's recipe map: result -> [comp1, comp2]
+let lastActiveCount = 0; // Track last active count to compute diff
 let isPanning = false;
 let panStartX = 0;
 let panStartY = 0;
@@ -51,32 +54,18 @@ function draw(nodes, links) {
   ctx.scale(zoomLevel.value, zoomLevel.value);
   ctx.translate(-width.value / 2, -height.value / 2);
 
-  // links - draw normal links in gray
-  ctx.strokeStyle = "#888";
-  ctx.beginPath();
+  // Draw links individually for dynamic styling
   links.forEach(l => {
-    if (!isRecipePathLink(l)) {
-      ctx.moveTo(l.source.x, l.source.y);
-      ctx.lineTo(l.target.x, l.target.y);
-    }
-  });
-  ctx.stroke();
+    const isRecipe = l.isRecipe;
+    ctx.strokeStyle = isRecipe ? "#ff0000" : "#888";
+    ctx.lineWidth = isRecipe ? 2 : 1;
+    ctx.beginPath();
+    ctx.moveTo(l.source.x, l.source.y);
+    ctx.lineTo(l.target.x, l.target.y);
+    ctx.stroke();
+    ctx.lineWidth = 1;
 
-  // recipe path links in red
-  ctx.strokeStyle = "#ff0000";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  links.forEach(l => {
-    if (isRecipePathLink(l)) {
-      ctx.moveTo(l.source.x, l.source.y);
-      ctx.lineTo(l.target.x, l.target.y);
-    }
-  });
-  ctx.stroke();
-  ctx.lineWidth = 1;
-
-  // arrowheads for direction
-  links.forEach(l => {
+    // Arrowhead per link
     const fromX = l.source.x;
     const fromY = l.source.y;
     const toX = l.target.x;
@@ -90,7 +79,7 @@ function draw(nodes, links) {
 
     const arrowLen = 14;
     const arrowWidth = 8;
-    const pullBack = 30; // pull back more so arrowhead stays off the node
+    const pullBack = 30;
 
     const baseX = toX - ux * pullBack;
     const baseY = toY - uy * pullBack;
@@ -100,7 +89,7 @@ function draw(nodes, links) {
     const rightX = baseX + uy * arrowWidth + ux * arrowLen;
     const rightY = baseY - ux * arrowWidth + uy * arrowLen;
 
-    ctx.fillStyle = "#444";
+    ctx.fillStyle = isRecipe ? "#ff0000" : "#444";
     ctx.beginPath();
     ctx.moveTo(toX, toY);
     ctx.lineTo(leftX, leftY);
@@ -131,22 +120,29 @@ function draw(nodes, links) {
 }
 
 function isRecipePathLink(link) {
-  // Check if this link is part of the recipe path
-  // We need to check if the link is one of the three edges in a recipe path triple
+  // Use cached membership flag for performance
+  return !!link.isRecipe;
+}
+
+function markRecipePathLinks() {
+  // Reset all links
+  expandedLinks.forEach(l => { l.isRecipe = false; });
+
+  // Mark links that belong to the current recipe path
   for (const [comp1, comp2, result] of recipePathEdges) {
     const recipeKey = `${comp1}_${comp2}_${result}`;
     const combNodeId = recipeToComboNodeId[recipeKey];
-    
-    if (combNodeId) {
-      // Check if link is one of: comp1->combNode, comp2->combNode, combNode->result
-      if ((link.source.id === comp1 && link.target.id === combNodeId) ||
-          (link.source.id === comp2 && link.target.id === combNodeId) ||
-          (link.source.id === combNodeId && link.target.id === result)) {
-        return true;
+    if (!combNodeId) continue;
+
+    // Find and mark the three edges for this recipe triple
+    expandedLinks.forEach(l => {
+      if ((l.source.id === comp1 && l.target.id === combNodeId) ||
+          (l.source.id === comp2 && l.target.id === combNodeId) ||
+          (l.source.id === combNodeId && l.target.id === result)) {
+        l.isRecipe = true;
       }
-    }
+    });
   }
-  return false;
 }
 
 function screenToCanvasCoords(screenX, screenY) {
@@ -212,12 +208,12 @@ function onMouseMove(event) {
 }
 
 function findPathToNode(targetMaterial) {
-  // Trace back the recipe path to the target material
+  // Trace back the recipe path to the target material using current recipe map
   const path = new Set();
   
   function trace(material) {
-    if (recipeMap[material]) {
-      const [comp1, comp2] = recipeMap[material];
+    if (currentRecipeMap[material]) {
+      const [comp1, comp2] = currentRecipeMap[material];
       path.add([comp1, comp2, material]);
       trace(comp1);
       trace(comp2);
@@ -231,6 +227,7 @@ function findPathToNode(targetMaterial) {
 function updateRecipePath(targetMaterial) {
   // Update the recipe path to highlight the path to the target material
   recipePathEdges = findPathToNode(targetMaterial);
+  markRecipePathLinks();
   
   // Redraw the graph with the new recipe path
   if (expandedNodes.length > 0 && expandedLinks.length > 0) {
@@ -359,60 +356,100 @@ function resetZoom() {
   panY.value = 0;
 }
 
-async function loadGraphData() {
-  console.log("Loading graph data...");
-  try {
-    const apiUrl = import.meta.env.VITE_FLASK_API_URL || 'http://localhost:3000'
-    let query = isLoggedIn.value && username.value
-      ? `?username=${encodeURIComponent(username.value)}`
-      : '';
+function rebuildGraphForTimeline() {
+  if (!originalLinks || originalLinks.length === 0 || !allNodes) return;
+  
+  const total = originalLinks.length;
+  const activeCount = Math.max(1, Math.floor((timePercentage.value / 100) * total));
+  const activeLinks = originalLinks.slice(0, activeCount);
+  
+  console.log(`Updating graph to ${activeCount}/${total} links (${timePercentage.value}%)`);
+  
+  // Step 1: Build what SHOULD exist
+  const shouldExistMaterials = new Set(['Fire', 'Water', 'Earth', 'Air']);
+  const shouldExistCombos = new Set(); // recipe keys
+  const shouldExistComboNodes = new Map(); // recipe key -> combo node id
+  
+  activeLinks.forEach(l => {
+    shouldExistMaterials.add(l.from1);
+    shouldExistMaterials.add(l.from2);
+    shouldExistMaterials.add(l.to);
     
-    // Add percentage parameter
-    const percentageParam = `percentage=${timePercentage.value}`;
-    query = query ? `${query}&${percentageParam}` : `?${percentageParam}`;
+    const recipeKey = `${l.from1}_${l.from2}_${l.to}`;
+    shouldExistCombos.add(recipeKey);
+  });
+  
+  // Step 2: Determine what to add and what to remove
+  const currentMaterialIds = new Set(expandedNodes.filter(n => n.type !== "combination").map(n => n.id));
+  const currentComboKeys = new Set(Object.keys(recipeToComboNodeId));
+  
+  const materialsToAdd = [...shouldExistMaterials].filter(id => !currentMaterialIds.has(id));
+  const materialsToRemove = [...currentMaterialIds].filter(id => !shouldExistMaterials.has(id));
+  const combosToAdd = [...shouldExistCombos].filter(key => !currentComboKeys.has(key));
+  const combosToRemove = [...currentComboKeys].filter(key => !shouldExistCombos.has(key));
+  
+  console.log(`Add: ${materialsToAdd.length} materials, ${combosToAdd.length} combos | Remove: ${materialsToRemove.length} materials, ${combosToRemove.length} combos`);
+  
+  // Step 3: Remove nodes and links
+  if (combosToRemove.length > 0 || materialsToRemove.length > 0) {
+    const comboIdsToRemove = new Set(combosToRemove.map(key => recipeToComboNodeId[key]));
+    const materialIdsToRemove = new Set(materialsToRemove);
     
-    const res = await fetch(`${apiUrl}/api/graph${query}`);
-    if (!res.ok) {
-      console.error("Failed to fetch graph data:", res.status);
-      return;
-    }
-    const { nodes, links, recipePath } = await res.json();
-    console.log("Loaded graph data:", { nodes, links, recipePath });
-
-    // Build recipe map for finding paths to any node
-    recipeMap = {};
-    links.forEach(l => {
-      if (!recipeMap[l.to]) {
-        recipeMap[l.to] = [l.from1, l.from2];
+    // Remove combo mappings
+    combosToRemove.forEach(key => delete recipeToComboNodeId[key]);
+    
+    // Filter out removed nodes
+    expandedNodes = expandedNodes.filter(n => {
+      return !comboIdsToRemove.has(n.id) && !materialIdsToRemove.has(n.id);
+    });
+    
+    // Filter out links connected to removed nodes
+    expandedLinks = expandedLinks.filter(link => {
+      const sourceId = link.source.id || link.source;
+      const targetId = link.target.id || link.target;
+      return !comboIdsToRemove.has(sourceId) && !comboIdsToRemove.has(targetId) &&
+             !materialIdsToRemove.has(sourceId) && !materialIdsToRemove.has(targetId);
+    });
+  }
+  
+  // Step 4: Add new materials
+  if (materialsToAdd.length > 0) {
+    materialsToAdd.forEach(matId => {
+      const nodeData = allNodes.find(n => n.id === matId);
+      if (nodeData) {
+        expandedNodes.push({
+          id: nodeData.id,
+          label: nodeData.label,
+          emoji: nodeData.emoji,
+          type: nodeData.type
+        });
       }
     });
-
-    // Store recipe path for highlighting (initially the default path from API)
-    recipePathEdges = new Set(recipePath.map(p => [p[0], p[1], p[2]]));
-    recipeToComboNodeId = {};  // Reset the mapping
-
-    // cache nodes for hover detection
-    storedNodes.value = nodes;
-
-    // Turn each combination link into linear links by adding a combination node
-    expandedNodes = [...nodes];
-    expandedLinks = [];
-    let combinationNodeId = 0;
-
-    links.forEach(l => {
-      // Resolve source and target nodes
-      const sourceNode1 = expandedNodes.find(n => n.id === l.from1);
-      const sourceNode2 = expandedNodes.find(n => n.id === l.from2);
-      const targetNode = expandedNodes.find(n => n.id === l.to);
-
-      if (!sourceNode1 || !sourceNode2 || !targetNode) {
-        console.warn("Could not resolve nodes for link:", l, { sourceNode1, sourceNode2, targetNode });
-        console.warn("Available node IDs:", expandedNodes.map(n => n.id));
-        // Skip this link instead of crashing
+  }
+  
+  // Step 5: Add new combos and their links
+  if (combosToAdd.length > 0) {
+    let combinationNodeId = Object.keys(recipeToComboNodeId).length;
+    
+    combosToAdd.forEach(recipeKey => {
+      const [from1, from2, to] = recipeKey.split('_');
+      const linkData = activeLinks.find(l => l.from1 === from1 && l.from2 === from2 && l.to === to);
+      
+      if (!linkData) {
+        console.warn("Could not find link data for recipe:", recipeKey);
         return;
       }
-
-      // Create intermediate combination node
+      
+      const sourceNode1 = expandedNodes.find(n => n.id === from1);
+      const sourceNode2 = expandedNodes.find(n => n.id === from2);
+      const targetNode = expandedNodes.find(n => n.id === to);
+      
+      if (!sourceNode1 || !sourceNode2 || !targetNode) {
+        console.warn("Could not resolve nodes for recipe:", recipeKey);
+        return;
+      }
+      
+      // Create combo node
       const combId = `_comb_${combinationNodeId++}`;
       const combNode = {
         id: combId,
@@ -421,49 +458,97 @@ async function loadGraphData() {
         type: "combination"
       };
       expandedNodes.push(combNode);
-      
-      // Store mapping for recipe path highlighting
-      const recipeKey = `${l.from1}_${l.from2}_${l.to}`;
       recipeToComboNodeId[recipeKey] = combId;
-
-      // Create links with distance data: source1 → combination, source2 → combination, combination → target
-      console.log("Creating expanded links for combination:", l);
-      expandedLinks.push({ source: sourceNode1, target: combNode, distance: l.distanceFrom1 });
-      expandedLinks.push({ source: sourceNode2, target: combNode, distance: l.distanceFrom2 });
-      expandedLinks.push({ source: combNode, target: targetNode, distance: l.distanceTo });
+      
+      // Add links
+      expandedLinks.push({ source: sourceNode1, target: combNode, distance: linkData.distanceFrom1, isRecipe: false });
+      expandedLinks.push({ source: sourceNode2, target: combNode, distance: linkData.distanceFrom2, isRecipe: false });
+      expandedLinks.push({ source: combNode, target: targetNode, distance: linkData.distanceTo, isRecipe: false });
     });
-
-    const normalizedLinks = expandedLinks;
-    storedNodes.value = expandedNodes;
-
-    // Stop existing simulation if it exists
-    if (simulation) {
-      simulation.stop();
+  }
+  
+  // Step 6: Update recipe map and path
+  currentRecipeMap = {};
+  activeLinks.forEach(l => {
+    if (!currentRecipeMap[l.to]) {
+      currentRecipeMap[l.to] = [l.from1, l.from2];
     }
-
-    ctx = canvas.value.getContext("2d");
-
+  });
+  
+  const goalMaterial = activeLinks[activeCount - 1]?.to;
+  recipePathEdges = goalMaterial ? findPathToNode(goalMaterial) : new Set();
+  markRecipePathLinks();
+  
+  // Step 7: Update simulation
+  storedNodes.value = expandedNodes;
+  
+  const isInitialBuild = !simulation;
+  if (isInitialBuild) {
     simulation = forceSimulation(expandedNodes)
       .force("link",
-        forceLink(normalizedLinks)
+        forceLink(expandedLinks)
           .distance(l => {
-            // Use distance values from API if available, otherwise use defaults
             if (l.distance !== undefined && l.distance !== null && !isNaN(l.distance)) {
               const maxDistance = 300;
               const minDistance = 10;
               return minDistance + l.distance * (maxDistance - minDistance);
             }
-            // Fallback to default distance if no valid distance data
             return 80;
           })
           .strength(0.8)
       )
       .force("charge", forceManyBody().strength(-200))
       .force("center", forceCenter(width.value / 2, height.value / 2));
-
+    
     simulation.on("tick", () => {
-      draw(expandedNodes, normalizedLinks);
+      draw(expandedNodes, expandedLinks);
     });
+  } else {
+    simulation.nodes(expandedNodes);
+    simulation.force("link",
+      forceLink(expandedLinks)
+        .distance(l => {
+          if (l.distance !== undefined && l.distance !== null && !isNaN(l.distance)) {
+            const maxDistance = 300;
+            const minDistance = 10;
+            return minDistance + l.distance * (maxDistance - minDistance);
+          }
+          return 80;
+        })
+        .strength(0.8)
+    );
+    simulation.alpha(0.3).restart();
+  }
+}
+
+async function loadGraphData() {
+  console.log("Loading graph data...");
+  try {
+    const apiUrl = import.meta.env.VITE_FLASK_API_URL || 'http://localhost:3000'
+    let query = isLoggedIn.value && username.value
+      ? `?username=${encodeURIComponent(username.value)}`
+      : '';
+    
+    // Always fetch full graph - no percentage parameter
+    const res = await fetch(`${apiUrl}/api/graph${query}`);
+    if (!res.ok) {
+      console.error("Failed to fetch graph data:", res.status);
+      return;
+    }
+    const { nodes, links, recipePath } = await res.json();
+    console.log("Loaded full graph data:", { nodes: nodes.length, links: links.length });
+
+    // Store full data for timeline filtering
+    originalLinks = links;
+    allNodes = nodes;
+    
+    // Store initial recipe path (for full history)
+    recipePathEdges = new Set(recipePath.map(p => [p[0], p[1], p[2]]));
+    
+    ctx = canvas.value.getContext("2d");
+    
+    // Build graph based on current timeline percentage
+    rebuildGraphForTimeline();
   } catch (error) {
     console.error("Error loading graph:", error);
   }
@@ -511,10 +596,10 @@ watch([panX, panY], () => {
   }
 });
 
-// Watch time percentage slider and reload graph
+// Watch time percentage slider and rebuild graph
 watch(timePercentage, () => {
   console.log(`Time slider changed to ${timePercentage.value}%`);
-  loadGraphData();
+  rebuildGraphForTimeline();
 });
 
 onBeforeUnmount(() => {

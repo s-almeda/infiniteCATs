@@ -396,10 +396,10 @@ def craft_new_word(first_word: str, second_word: str, username: str = None) -> d
     # Return empty result if generation failed
     return {'result': '', 'emoji': '', 'isDiscovery': False}
 
-def get_nodes_and_edges(username: str | None = None, percentage: float = 100.0):
-    """Retrieve graph nodes/edges filtered by username and percentage of rows."""
+def get_nodes_and_edges(username: str | None = None):
+    """Retrieve full graph nodes/edges for username. Frontend handles timeline filtering."""
     scope = f"user={username}" if username else "all users"
-    print(f"Fetching graph data from database for {scope} at {percentage}% progress...")
+    print(f"Fetching full graph data from database for {scope}...")
 
     # Pull combinations scoped to a specific user when username is provided
     conn = get_db()
@@ -414,20 +414,8 @@ def get_nodes_and_edges(username: str | None = None, percentage: float = 100.0):
     rows = cursor.fetchall()
     conn.close()
     
-    # Apply percentage filter - only use first N% of rows
-    goal_material = None
-    if percentage < 100.0:
-        total_rows = len(rows)
-        rows_to_use = max(1, int(total_rows * (percentage / 100.0)))
-        rows = rows[:rows_to_use]
-        # The goal material is the last material created
-        if rows:
-            goal_material = rows[-1]['resultName']
-        print(f"Using {rows_to_use} of {total_rows} rows ({percentage}%), goal: {goal_material}")
-    else:
-        # If showing all rows, goal is the last one
-        if rows:
-            goal_material = rows[-1]['resultName']
+    # Goal material is always the last combination
+    goal_material = rows[-1]['resultName'] if rows else None
 
     nodes: dict[str, dict] = {}
     edges = []
@@ -519,8 +507,7 @@ def get_nodes_and_edges(username: str | None = None, percentage: float = 100.0):
 @app.route('/api/graph', methods=['GET'])
 def get_graph_data():
     username = request.args.get('username')
-    percentage = request.args.get('percentage', 100.0, type=float)
-    nodes, edges, recipe_path = get_nodes_and_edges(username, percentage)
+    nodes, edges, recipe_path = get_nodes_and_edges(username)
     return jsonify({'nodes': nodes, 'links': edges, 'recipePath': recipe_path})
 
 @app.route('/', methods=['GET'])
