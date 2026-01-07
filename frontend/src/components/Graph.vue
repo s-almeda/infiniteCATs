@@ -32,6 +32,7 @@ const zoomLevel = ref(1);
 const panX = ref(0);
 const panY = ref(0);
 const timePercentage = ref(100);
+const renderMode = ref('Combination Nodes');
 let expandedNodes = [];
 let expandedLinks = [];
 let originalLinks = []; // Raw chronological links from API
@@ -96,6 +97,21 @@ function draw(nodes, links) {
     ctx.lineTo(rightX, rightY);
     ctx.closePath();
     ctx.fill();
+
+    // Edge label for 'Labeled Arrows' render mode
+    if (renderMode.value === 'Labeled Arrows' && l.label) {
+      const midX = (fromX + toX) / 2;
+      const midY = (fromY + toY) / 2;
+      // Offset label slightly perpendicular to the edge
+      const offset = 12;
+      const labelX = midX - uy * offset;
+      const labelY = midY + ux * offset;
+      ctx.fillStyle = isRecipe ? '#b00000' : '#222';
+      ctx.font = '12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(l.label, labelX, labelY);
+    }
   });
 
   // nodes
@@ -128,21 +144,12 @@ function markRecipePathLinks() {
   // Reset all links
   expandedLinks.forEach(l => { l.isRecipe = false; });
 
-  // Mark links that belong to the current recipe path
-  for (const [comp1, comp2, result] of recipePathEdges) {
-    const recipeKey = `${comp1}_${comp2}_${result}`;
-    const combNodeId = recipeToComboNodeId[recipeKey];
-    if (!combNodeId) continue;
-
-    // Find and mark the three edges for this recipe triple
-    expandedLinks.forEach(l => {
-      if ((l.source.id === comp1 && l.target.id === combNodeId) ||
-          (l.source.id === comp2 && l.target.id === combNodeId) ||
-          (l.source.id === combNodeId && l.target.id === result)) {
-        l.isRecipe = true;
-      }
-    });
-  }
+  // Mark links that belong to the current recipe path using recipeKey
+  expandedLinks.forEach(l => {
+    if (l.recipeKey && recipePathEdges.has(l.recipeKey)) {
+      l.isRecipe = true;
+    }
+  });
 }
 
 function screenToCanvasCoords(screenX, screenY) {
@@ -214,7 +221,7 @@ function findPathToNode(targetMaterial) {
   function trace(material) {
     if (currentRecipeMap[material]) {
       const [comp1, comp2] = currentRecipeMap[material];
-      path.add([comp1, comp2, material]);
+      path.add(`${comp1}_${comp2}_${material}`);
       trace(comp1);
       trace(comp2);
     }
@@ -356,7 +363,7 @@ function resetZoom() {
   panY.value = 0;
 }
 
-function rebuildGraphForTimeline() {
+function rebuildGraphForTimeline(fullReset = false) {
   if (!originalLinks || originalLinks.length === 0 || !allNodes) return;
   
   const total = originalLinks.length;
@@ -364,19 +371,35 @@ function rebuildGraphForTimeline() {
   const activeLinks = originalLinks.slice(0, activeCount);
   
   console.log(`Updating graph to ${activeCount}/${total} links (${timePercentage.value}%)`);
+
+  // When switching render modes, fully reset state to avoid leftover mutated objects
+  if (fullReset) {
+    recipeToComboNodeId = {};
+    expandedNodes = [];
+    expandedLinks = [];
+    storedNodes.value = [];
+    if (simulation) {
+      simulation.stop();
+      simulation = null;
+    }
+  }
   
-  // Step 1: Build what SHOULD exist
+  // Step 1: Build what SHOULD exist depending on render mode
   const shouldExistMaterials = new Set(['Fire', 'Water', 'Earth', 'Air']);
-  const shouldExistCombos = new Set(); // recipe keys
-  const shouldExistComboNodes = new Map(); // recipe key -> combo node id
+  const shouldExistCombos = new Set(); // recipe keys (used as edge identity)
   
   activeLinks.forEach(l => {
-    shouldExistMaterials.add(l.from1);
-    shouldExistMaterials.add(l.from2);
-    shouldExistMaterials.add(l.to);
-    
     const recipeKey = `${l.from1}_${l.from2}_${l.to}`;
     shouldExistCombos.add(recipeKey);
+    if (renderMode.value === 'Combination Nodes') {
+      shouldExistMaterials.add(l.from1);
+      shouldExistMaterials.add(l.from2);
+      shouldExistMaterials.add(l.to);
+    } else {
+      // Labeled Arrows: only from2 and to are connected
+      shouldExistMaterials.add(l.from2);
+      shouldExistMaterials.add(l.to);
+    }
   });
   
   // Step 2: Determine what to add and what to remove
@@ -392,24 +415,36 @@ function rebuildGraphForTimeline() {
   
   // Step 3: Remove nodes and links
   if (combosToRemove.length > 0 || materialsToRemove.length > 0) {
-    const comboIdsToRemove = new Set(combosToRemove.map(key => recipeToComboNodeId[key]));
     const materialIdsToRemove = new Set(materialsToRemove);
-    
-    // Remove combo mappings
-    combosToRemove.forEach(key => delete recipeToComboNodeId[key]);
-    
-    // Filter out removed nodes
-    expandedNodes = expandedNodes.filter(n => {
-      return !comboIdsToRemove.has(n.id) && !materialIdsToRemove.has(n.id);
-    });
-    
-    // Filter out links connected to removed nodes
-    expandedLinks = expandedLinks.filter(link => {
-      const sourceId = link.source.id || link.source;
-      const targetId = link.target.id || link.target;
-      return !comboIdsToRemove.has(sourceId) && !comboIdsToRemove.has(targetId) &&
-             !materialIdsToRemove.has(sourceId) && !materialIdsToRemove.has(targetId);
-    });
+    if (renderMode.value === 'Combination Nodes') {
+      const comboIdsToRemove = new Set(combosToRemove.map(key => recipeToComboNodeId[key]));
+      // Remove combo mappings
+      combosToRemove.forEach(key => delete recipeToComboNodeId[key]);
+      // Filter out removed nodes
+      expandedNodes = expandedNodes.filter(n => {
+        return !comboIdsToRemove.has(n.id) && !materialIdsToRemove.has(n.id);
+      });
+      // Filter out links connected to removed nodes
+      expandedLinks = expandedLinks.filter(link => {
+        const sourceId = link.source.id || link.source;
+        const targetId = link.target.id || link.target;
+        return !comboIdsToRemove.has(sourceId) && !comboIdsToRemove.has(targetId) &&
+               !materialIdsToRemove.has(sourceId) && !materialIdsToRemove.has(targetId);
+      });
+    } else {
+      // Labeled Arrows: remove edges by recipeKey
+      const combosToRemoveSet = new Set(combosToRemove);
+      expandedLinks = expandedLinks.filter(link => !combosToRemoveSet.has(link.recipeKey));
+      // Remove materials not in shouldExist
+      expandedNodes = expandedNodes.filter(n => !materialIdsToRemove.has(n.id));
+      // Also filter any links connected to removed materials
+      const removedMaterials = materialIdsToRemove;
+      expandedLinks = expandedLinks.filter(link => {
+        const sourceId = link.source.id || link.source;
+        const targetId = link.target.id || link.target;
+        return !removedMaterials.has(sourceId) && !removedMaterials.has(targetId);
+      });
+    }
   }
   
   // Step 4: Add new materials
@@ -427,44 +462,52 @@ function rebuildGraphForTimeline() {
     });
   }
   
-  // Step 5: Add new combos and their links
+  // Step 5: Add new combos/edges
   if (combosToAdd.length > 0) {
-    let combinationNodeId = Object.keys(recipeToComboNodeId).length;
-    
-    combosToAdd.forEach(recipeKey => {
-      const [from1, from2, to] = recipeKey.split('_');
-      const linkData = activeLinks.find(l => l.from1 === from1 && l.from2 === from2 && l.to === to);
-      
-      if (!linkData) {
-        console.warn("Could not find link data for recipe:", recipeKey);
-        return;
-      }
-      
-      const sourceNode1 = expandedNodes.find(n => n.id === from1);
-      const sourceNode2 = expandedNodes.find(n => n.id === from2);
-      const targetNode = expandedNodes.find(n => n.id === to);
-      
-      if (!sourceNode1 || !sourceNode2 || !targetNode) {
-        console.warn("Could not resolve nodes for recipe:", recipeKey);
-        return;
-      }
-      
-      // Create combo node
-      const combId = `_comb_${combinationNodeId++}`;
-      const combNode = {
-        id: combId,
-        label: `${sourceNode1.label} + ${sourceNode2.label}`,
-        emoji: "",
-        type: "combination"
-      };
-      expandedNodes.push(combNode);
-      recipeToComboNodeId[recipeKey] = combId;
-      
-      // Add links
-      expandedLinks.push({ source: sourceNode1, target: combNode, distance: linkData.distanceFrom1, isRecipe: false });
-      expandedLinks.push({ source: sourceNode2, target: combNode, distance: linkData.distanceFrom2, isRecipe: false });
-      expandedLinks.push({ source: combNode, target: targetNode, distance: linkData.distanceTo, isRecipe: false });
-    });
+    if (renderMode.value === 'Combination Nodes') {
+      let combinationNodeId = Object.keys(recipeToComboNodeId).length;
+      combosToAdd.forEach(recipeKey => {
+        const [from1, from2, to] = recipeKey.split('_');
+        const linkData = activeLinks.find(l => l.from1 === from1 && l.from2 === from2 && l.to === to);
+        if (!linkData) {
+          console.warn("Could not find link data for recipe:", recipeKey);
+          return;
+        }
+        const sourceNode1 = expandedNodes.find(n => n.id === from1);
+        const sourceNode2 = expandedNodes.find(n => n.id === from2);
+        const targetNode = expandedNodes.find(n => n.id === to);
+        if (!sourceNode1 || !sourceNode2 || !targetNode) {
+          console.warn("Could not resolve nodes for recipe:", recipeKey);
+          return;
+        }
+        // Create combo node
+        const combId = `_comb_${combinationNodeId++}`;
+        const combNode = { id: combId, label: `${sourceNode1.label} + ${sourceNode2.label}`, emoji: "", type: "combination" };
+        expandedNodes.push(combNode);
+        recipeToComboNodeId[recipeKey] = combId;
+        // Add links with recipeKey
+        expandedLinks.push({ source: sourceNode1, target: combNode, distance: linkData.distanceFrom1, isRecipe: false, recipeKey });
+        expandedLinks.push({ source: sourceNode2, target: combNode, distance: linkData.distanceFrom2, isRecipe: false, recipeKey });
+        expandedLinks.push({ source: combNode, target: targetNode, distance: linkData.distanceTo, isRecipe: false, recipeKey });
+      });
+    } else {
+      // Labeled Arrows: create single edge from from2 -> to labeled with from1
+      combosToAdd.forEach(recipeKey => {
+        const [from1, from2, to] = recipeKey.split('_');
+        const linkData = activeLinks.find(l => l.from1 === from1 && l.from2 === from2 && l.to === to);
+        if (!linkData) {
+          console.warn("Could not find link data for recipe:", recipeKey);
+          return;
+        }
+        const sourceNode2 = expandedNodes.find(n => n.id === from2);
+        const targetNode = expandedNodes.find(n => n.id === to);
+        if (!sourceNode2 || !targetNode) {
+          console.warn("Could not resolve nodes for labeled arrow:", recipeKey);
+          return;
+        }
+        expandedLinks.push({ source: sourceNode2, target: targetNode, distance: linkData.distanceTo, isRecipe: false, recipeKey, label: from1 });
+      });
+    }
   }
   
   // Step 6: Update recipe map and path
@@ -542,8 +585,8 @@ async function loadGraphData() {
     originalLinks = links;
     allNodes = nodes;
     
-    // Store initial recipe path (for full history)
-    recipePathEdges = new Set(recipePath.map(p => [p[0], p[1], p[2]]));
+    // Store initial recipe path (for full history) as string keys
+    recipePathEdges = new Set(recipePath.map(p => `${p[0]}_${p[1]}_${p[2]}`));
     
     ctx = canvas.value.getContext("2d");
     
@@ -602,6 +645,12 @@ watch(timePercentage, () => {
   rebuildGraphForTimeline();
 });
 
+// Rebuild when render mode changes
+watch(renderMode, () => {
+  console.log(`Render mode changed to ${renderMode.value}`);
+  rebuildGraphForTimeline(true);
+});
+
 onBeforeUnmount(() => {
   simulation?.stop();
   cancelAnimationFrame(animationFrame);
@@ -635,6 +684,13 @@ onBeforeUnmount(() => {
       <button @click="zoomOut" class="bg-blue-500 text-white px-3 py-1 rounded text-sm hover:bg-blue-600">−</button>
     </div>
     <div class="absolute bottom-2 left-2 right-2 bg-white border border-gray-300 rounded px-4 py-3 shadow" @wheel.stop @mousedown.stop>
+      <div class="flex items-center gap-3 mb-3">
+        <label class="text-sm font-medium whitespace-nowrap">Render Mode:</label>
+        <select v-model="renderMode" class="text-sm border border-gray-300 rounded px-2 py-1">
+          <option value="Combination Nodes">Combination Nodes</option>
+          <option value="Labeled Arrows">Labeled Arrows</option>
+        </select>
+      </div>
       <div class="flex items-center gap-3">
         <label class="text-sm font-medium whitespace-nowrap">Timeline: {{ timePercentage }}%</label>
         <input 
