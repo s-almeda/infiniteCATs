@@ -495,7 +495,7 @@ function rebuildGraphForTimeline() {
             }
             return 80;
           })
-          .strength(0.8)
+          .strength(l => l.isRecipe ? 1.5 : 0.8)
       )
       .force("charge", forceManyBody().strength(-200))
       .force("center", forceCenter(width.value / 2, height.value / 2));
@@ -515,7 +515,7 @@ function rebuildGraphForTimeline() {
           }
           return 80;
         })
-        .strength(0.8)
+        .strength(l => l.isRecipe ? 1.5 : 0.8)
     );
     simulation.alpha(0.3).restart();
   }
