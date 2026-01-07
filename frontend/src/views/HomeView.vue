@@ -5,6 +5,7 @@ import Resource from "@/components/Resource.vue";
 import AvaliableResources from "@/components/AvailableResources.vue";
 import Container from "@/components/Container.vue";
 import Graph from "@/components/Graph.vue";
+import WelcomeModal from "@/components/WelcomeModal.vue";
 import { computed, onMounted } from "vue";
 import { useUserStore } from "@/stores/useUserStore";
 import { useResourcesStore } from "@/stores/useResourcesStore";
@@ -23,6 +24,7 @@ onMounted(async () => {
 </script>
 
 <template>
+  <WelcomeModal></WelcomeModal>
   <Example></Example>
   <Graph v-if="showGraph"></Graph>
 </template>

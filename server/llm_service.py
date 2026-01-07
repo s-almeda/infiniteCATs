@@ -102,38 +102,70 @@ def generate_combination(first_word: str, second_word: str, max_retries: int = 2
         },
         {
             'role': 'user',
-            'content': f"combine Metal and Rain"
+            'content': f"combine Mountain and Dust"
         },
         {
             'role': 'assistant',
-            'content': '{"name": "Rust", "emoji": "🛠️"}'
+            'content': '{"name": "Troll", "emoji": "🧌"}'
         },
         {
             'role': 'user',
-            'content': f"combine Lightning and Mud"
+            'content': f"combine Beach and Fire"
         },
         {
             'role': 'assistant',
-            'content': '{"name": "Life", "emoji": "🌱"}'
+            'content': '{"name": "Sun", "emoji": "☀️"}'
+        },
+        {
+            'role': 'user',
+            'content': f"combine Beach and Sun"
+        },
+        {
+            'role': 'assistant',
+            'content': '{"name": "Vacation", "emoji": "🏖️"}'
+        },
+        {
+            'role': 'user',
+            'content': f"combine Pop and Star"
+        },
+        {
+            'role': 'assistant',
+            'content': '{"name": "Celebrity", "emoji": "🌟"}'
+        },
+        {
+            'role': 'user',
+            'content': f"combine Robot and Sound"
+        },
+        {
+            'role': 'assistant',
+            'content': '{"name": "Vocaloid", "emoji": "🤖"}'
+        },
+         {
+            'role': 'user',
+            'content': f"combine Vocaloid and Vocaloid"
+        },
+        {
+            'role': 'assistant',
+            'content': '{"name": "Hatsune Miku", "emoji": "🎤"}'
         },
     ]
 
     # Add cached examples as few-shot pairs in the conversation
-    seen_pairs = set()
-    for fw, sw, res, emo in examples_first + examples_second:
-        ordered_fw, ordered_sw = consistent_order(fw, sw)
-        key = (ordered_fw, ordered_sw, res, emo)
-        if key in seen_pairs:
-            continue
-        seen_pairs.add(key)
-        primer_messages.append({
-            'role': 'user',
-            'content': f"combine {ordered_fw} and {ordered_sw}"
-        })
-        primer_messages.append({
-            'role': 'assistant',
-            'content': json.dumps({"name": res, "emoji": emo})
-        })
+    # seen_pairs = set()
+    # for fw, sw, res, emo in examples_first + examples_second:
+    #     ordered_fw, ordered_sw = consistent_order(fw, sw)
+    #     key = (ordered_fw, ordered_sw, res, emo)
+    #     if key in seen_pairs:
+    #         continue
+    #     seen_pairs.add(key)
+    #     primer_messages.append({
+    #         'role': 'user',
+    #         'content': f"combine {ordered_fw} and {ordered_sw}"
+    #     })
+    #     primer_messages.append({
+    #         'role': 'assistant',
+    #         'content': json.dumps({"name": res, "emoji": emo})
+    #     })
     
     schema = TypeAdapter(Material).json_schema()
     messagesToSend = primer_messages + [

@@ -379,6 +379,12 @@ def craft_new_word(first_word: str, second_word: str, username: str = None) -> d
             cursor = conn.cursor()
             cursor.execute('SELECT name FROM materials WHERE name = ?', (result_name,))
             is_discovery = cursor.fetchone() is None
+            # if it's not a discovery use the existing emoji from the db
+            if not is_discovery:
+                cursor.execute('SELECT emoji FROM materials WHERE name = ?', (result_name,))
+                existing = cursor.fetchone()
+                if existing:
+                    result_emoji = existing['emoji']
             conn.close()
         
         # Spawn background task for embedding generation and logging only if username is provided
