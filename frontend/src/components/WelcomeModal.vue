@@ -2,7 +2,6 @@
 import { ref, computed } from 'vue'
 import { useUserStore } from '@/stores/useUserStore'
 import { storeToRefs } from 'pinia'
-import ConsentButtons from '@/components/ConsentButtons.vue'
 
 const userStore = useUserStore()
 const { username, isLoggedIn } = storeToRefs(userStore)
