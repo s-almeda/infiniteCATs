@@ -7,11 +7,11 @@ This ensures ranks are correct even for materials with spaces in their names.
 import os
 import sqlite3
 import sys
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 import sqlite_vec
 
 # Load environment variables
-load_dotenv()
+# load_dotenv()
 
 # Database setup
 DB_PATH = os.path.join(os.path.dirname(__file__), 'global.db')
