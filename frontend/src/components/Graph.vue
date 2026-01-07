@@ -33,6 +33,7 @@ const panX = ref(0);
 const panY = ref(0);
 const timePercentage = ref(100);
 const renderMode = ref('Combination Nodes');
+const currentLabelHighlight = ref(null);
 let expandedNodes = [];
 let expandedLinks = [];
 let originalLinks = []; // Raw chronological links from API
@@ -58,8 +59,9 @@ function draw(nodes, links) {
   // Draw links individually for dynamic styling
   links.forEach(l => {
     const isRecipe = l.isRecipe;
-    ctx.strokeStyle = isRecipe ? "#ff0000" : "#888";
-    ctx.lineWidth = isRecipe ? 2 : 1;
+    const isLabelHi = renderMode.value === 'Labeled Arrows' && l.isLabelHighlight;
+    ctx.strokeStyle = isRecipe ? "#ff0000" : (isLabelHi ? "#1e90ff" : "#888");
+    ctx.lineWidth = (isRecipe || isLabelHi) ? 2 : 1;
     ctx.beginPath();
     ctx.moveTo(l.source.x, l.source.y);
     ctx.lineTo(l.target.x, l.target.y);
@@ -90,7 +92,7 @@ function draw(nodes, links) {
     const rightX = baseX + uy * arrowWidth + ux * arrowLen;
     const rightY = baseY - ux * arrowWidth + uy * arrowLen;
 
-    ctx.fillStyle = isRecipe ? "#ff0000" : "#444";
+    ctx.fillStyle = isRecipe ? "#ff0000" : (isLabelHi ? "#0a4fa3" : "#444");
     ctx.beginPath();
     ctx.moveTo(toX, toY);
     ctx.lineTo(leftX, leftY);
@@ -106,7 +108,7 @@ function draw(nodes, links) {
       const offset = 12;
       const labelX = midX - uy * offset;
       const labelY = midY + ux * offset;
-      ctx.fillStyle = isRecipe ? '#b00000' : '#222';
+      ctx.fillStyle = isRecipe ? '#b00000' : (isLabelHi ? '#003366' : '#222');
       ctx.font = '12px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -149,6 +151,14 @@ function markRecipePathLinks() {
     if (l.recipeKey && recipePathEdges.has(l.recipeKey)) {
       l.isRecipe = true;
     }
+  });
+}
+
+function markLabelHighlightedEdges() {
+  // Only applies in Labeled Arrows mode
+  const active = renderMode.value === 'Labeled Arrows' ? currentLabelHighlight.value : null;
+  expandedLinks.forEach(l => {
+    l.isLabelHighlight = !!(active && l.label === active);
   });
 }
 
@@ -284,6 +294,37 @@ function onMouseDown(event) {
     return dx * dx + dy * dy <= 10 * 10;
   });
 
+  // Right-click behavior: highlight edges by label in Labeled Arrows mode
+  if (event.button === 2) {
+    if (renderMode.value === 'Labeled Arrows') {
+      if (hit) {
+        currentLabelHighlight.value = hit.id || hit.label || hit.name;
+      } else {
+        currentLabelHighlight.value = null;
+      }
+      markLabelHighlightedEdges();
+      // Update link force to strengthen highlighted edges
+      if (simulation) {
+        simulation.force("link",
+          forceLink(expandedLinks)
+            .distance(l => {
+              if (l.distance !== undefined && l.distance !== null && !isNaN(l.distance)) {
+                const maxDistance = 300;
+                const minDistance = 10;
+                return minDistance + l.distance * (maxDistance - minDistance);
+              }
+              return 80;
+            })
+            .strength(l => (l.isRecipe || (renderMode.value === 'Labeled Arrows' && l.isLabelHighlight)) ? 1.5 : 0.8)
+        );
+        simulation.alpha(0.25).restart();
+      }
+      // Redraw immediately for visual feedback
+      if (expandedNodes.length) draw(expandedNodes, expandedLinks);
+    }
+    return; // prevent panning/dragging on right-click
+  }
+
   // Left-click on empty space pans; left-click on node drags/clicks node.
   if (!hit && event.button === 0) {
     isPanning = true;
@@ -396,8 +437,8 @@ function rebuildGraphForTimeline(fullReset = false) {
       shouldExistMaterials.add(l.from2);
       shouldExistMaterials.add(l.to);
     } else {
-      // Labeled Arrows: only from2 and to are connected
-      shouldExistMaterials.add(l.from2);
+      // Labeled Arrows (reversed): connect from1 -> to and label with from2
+      shouldExistMaterials.add(l.from1);
       shouldExistMaterials.add(l.to);
     }
   });
@@ -486,12 +527,12 @@ function rebuildGraphForTimeline(fullReset = false) {
         expandedNodes.push(combNode);
         recipeToComboNodeId[recipeKey] = combId;
         // Add links with recipeKey
-        expandedLinks.push({ source: sourceNode1, target: combNode, distance: linkData.distanceFrom1, isRecipe: false, recipeKey });
-        expandedLinks.push({ source: sourceNode2, target: combNode, distance: linkData.distanceFrom2, isRecipe: false, recipeKey });
-        expandedLinks.push({ source: combNode, target: targetNode, distance: linkData.distanceTo, isRecipe: false, recipeKey });
+        expandedLinks.push({ source: sourceNode1, target: combNode, distance: linkData.distanceFrom1, isRecipe: false, isLabelHighlight: false, recipeKey });
+        expandedLinks.push({ source: sourceNode2, target: combNode, distance: linkData.distanceFrom2, isRecipe: false, isLabelHighlight: false, recipeKey });
+        expandedLinks.push({ source: combNode, target: targetNode, distance: linkData.distanceTo, isRecipe: false, isLabelHighlight: false, recipeKey });
       });
     } else {
-      // Labeled Arrows: create single edge from from2 -> to labeled with from1
+      // Labeled Arrows (reversed): create single edge from from1 -> to labeled with from2
       combosToAdd.forEach(recipeKey => {
         const [from1, from2, to] = recipeKey.split('_');
         const linkData = activeLinks.find(l => l.from1 === from1 && l.from2 === from2 && l.to === to);
@@ -499,13 +540,13 @@ function rebuildGraphForTimeline(fullReset = false) {
           console.warn("Could not find link data for recipe:", recipeKey);
           return;
         }
-        const sourceNode2 = expandedNodes.find(n => n.id === from2);
+        const sourceNode1 = expandedNodes.find(n => n.id === from1);
         const targetNode = expandedNodes.find(n => n.id === to);
-        if (!sourceNode2 || !targetNode) {
+        if (!sourceNode1 || !targetNode) {
           console.warn("Could not resolve nodes for labeled arrow:", recipeKey);
           return;
         }
-        expandedLinks.push({ source: sourceNode2, target: targetNode, distance: linkData.distanceTo, isRecipe: false, recipeKey, label: from1 });
+        expandedLinks.push({ source: sourceNode1, target: targetNode, distance: linkData.distanceTo, isRecipe: false, isLabelHighlight: false, recipeKey, label: from2 });
       });
     }
   }
@@ -538,7 +579,7 @@ function rebuildGraphForTimeline(fullReset = false) {
             }
             return 80;
           })
-          .strength(l => l.isRecipe ? 1.5 : 0.8)
+          .strength(l => (l.isRecipe || (renderMode.value === 'Labeled Arrows' && l.isLabelHighlight)) ? 1.5 : 0.8)
       )
       .force("charge", forceManyBody().strength(-200))
       .force("center", forceCenter(width.value / 2, height.value / 2));
@@ -558,7 +599,7 @@ function rebuildGraphForTimeline(fullReset = false) {
           }
           return 80;
         })
-        .strength(l => l.isRecipe ? 1.5 : 0.8)
+        .strength(l => (l.isRecipe || (renderMode.value === 'Labeled Arrows' && l.isLabelHighlight)) ? 1.5 : 0.8)
     );
     simulation.alpha(0.3).restart();
   }
@@ -649,6 +690,8 @@ watch(timePercentage, () => {
 watch(renderMode, () => {
   console.log(`Render mode changed to ${renderMode.value}`);
   rebuildGraphForTimeline(true);
+  // clear any label highlight when switching modes
+  currentLabelHighlight.value = null;
 });
 
 onBeforeUnmount(() => {
