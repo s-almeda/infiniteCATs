@@ -497,6 +497,9 @@ def get_nodes_and_edges(username: str | None = None):
     recipe_path = set()
     if goal_material:
         def trace_recipe(material, depth):
+            # Base case: stop at base materials
+            if material in base_materials:
+                return
             if material in recipe_map:
                 comp1, comp2, d = recipe_map[material]
                 if d > depth and depth != -1:

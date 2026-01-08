@@ -233,19 +233,33 @@ function onMouseMove(event) {
 }
 
 function findPathToNode(targetMaterial) {
-  // Trace back the recipe path to the target material using current recipe map
+  // Iteratively trace back the recipe path with cycle protection
   const path = new Set();
-  
-  function trace(material) {
-    if (currentRecipeMap[material]) {
-      const [comp1, comp2] = currentRecipeMap[material];
+  const visited = new Set();
+  const stack = [targetMaterial];
+  let safetyCounter = 0;
+  const maxSteps = 50000; // guard against malformed cyclic graphs
+
+  while (stack.length) {
+    const material = stack.pop();
+    if (visited.has(material)) continue;
+    visited.add(material);
+
+    const comps = currentRecipeMap[material];
+    if (Array.isArray(comps) && comps.length === 2) {
+      const [comp1, comp2] = comps;
       path.add(`${comp1}_${comp2}_${material}`);
-      trace(comp1);
-      trace(comp2);
+      if (!visited.has(comp1)) stack.push(comp1);
+      if (!visited.has(comp2)) stack.push(comp2);
+    }
+
+    safetyCounter++;
+    if (safetyCounter > maxSteps) {
+      console.warn('Path tracing aborted: exceeded maxSteps');
+      break;
     }
   }
-  
-  trace(targetMaterial);
+
   return path;
 }
 
