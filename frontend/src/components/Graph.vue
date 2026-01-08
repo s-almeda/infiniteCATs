@@ -46,6 +46,12 @@ let isPanning = false;
 let panStartX = 0;
 let panStartY = 0;
 
+function getEmojiFor(id) {
+  if (!allNodes) return "";
+  const n = allNodes.find(node => node.id === id);
+  return n?.emoji || "";
+}
+
 function draw(nodes, links) {
   ctx.clearRect(0, 0, width.value, height.value);
   
@@ -112,7 +118,9 @@ function draw(nodes, links) {
       ctx.font = '12px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(l.label, labelX, labelY);
+      const emoji = getEmojiFor(l.label);
+      const labelText = emoji ? `${l.label} ${emoji}` : l.label;
+      ctx.fillText(labelText, labelX, labelY);
     }
   });
 
