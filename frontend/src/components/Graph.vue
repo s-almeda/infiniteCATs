@@ -554,7 +554,7 @@ function rebuildGraphForTimeline(fullReset = false) {
           console.warn("Could not resolve nodes for labeled arrow:", recipeKey);
           return;
         }
-        expandedLinks.push({ source: sourceNode1, target: targetNode, distance: linkData.distanceTo, isRecipe: false, isLabelHighlight: false, recipeKey, label: from2 });
+        expandedLinks.push({ source: sourceNode1, target: targetNode, distance: linkData.distanceTo + linkData.distanceFrom1, isRecipe: false, isLabelHighlight: false, recipeKey, label: from2 });
       });
     }
   }
