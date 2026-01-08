@@ -239,18 +239,24 @@ function findPathToNode(targetMaterial) {
   const stack = [targetMaterial];
   let safetyCounter = 0;
   const maxSteps = 50000; // guard against malformed cyclic graphs
+  const baseSet = new Set(['Fire', 'Water', 'Earth', 'Air']);
 
   while (stack.length) {
     const material = stack.pop();
     if (visited.has(material)) continue;
     visited.add(material);
 
+    // Terminate traceback at base materials — do not expand or add edges
+    if (baseSet.has(material)) {
+      continue;
+    }
+
     const comps = currentRecipeMap[material];
     if (Array.isArray(comps) && comps.length === 2) {
       const [comp1, comp2] = comps;
       path.add(`${comp1}_${comp2}_${material}`);
-      if (!visited.has(comp1)) stack.push(comp1);
-      if (!visited.has(comp2)) stack.push(comp2);
+      if (!visited.has(comp1) && !baseSet.has(comp1)) stack.push(comp1);
+      if (!visited.has(comp2) && !baseSet.has(comp2)) stack.push(comp2);
     }
 
     safetyCounter++;
