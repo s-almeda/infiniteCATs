@@ -52,7 +52,74 @@ function getEmojiFor(id) {
   return n?.emoji || "";
 }
 
+function layoutLinkograph(nodes) {
+  // Position nodes in a horizontal line based on chronological order
+  const padding = 50;
+  const nodeSpacing = 80;
+  const baseY = height.value / 2;
+  
+  nodes.forEach((node) => {
+    // Position actual material nodes (not connector nodes which are already positioned)
+    if (!node.isConnector && node.chronoIndex !== undefined) {
+      node.x = padding + node.chronoIndex * nodeSpacing;
+      node.y = baseY;
+    }
+    // Connector nodes already have x, y set in buildLinkograph - don't override
+  });
+}
+
+function drawLinkograph(nodes, links) {
+  ctx.clearRect(0, 0, width.value, height.value);
+  
+  // Apply zoom and pan translation
+  ctx.save();
+  ctx.translate(panX.value, panY.value);
+  ctx.translate(width.value / 2, height.value / 2);
+  ctx.scale(zoomLevel.value, zoomLevel.value);
+  ctx.translate(-width.value / 2, -height.value / 2);
+
+  // Draw edges (straight lines, no weights)
+  links.forEach(link => {
+    const isRecipe = link.isRecipe;
+    ctx.strokeStyle = isRecipe ? "#ff0000" : "#888";
+    ctx.lineWidth = isRecipe ? 2 : 1;
+    ctx.globalAlpha = isRecipe ? 0.7 : 0.4;
+    
+    ctx.beginPath();
+    ctx.moveTo(link.source.x, link.source.y);
+    ctx.lineTo(link.target.x, link.target.y);
+    ctx.stroke();
+  });
+  ctx.globalAlpha = 1;
+
+  // Draw nodes
+  nodes.forEach(node => {
+    // Draw node circle
+    ctx.beginPath();
+    ctx.fillStyle = node.isConnector ? "#ff9500" : "#219ebc";
+    ctx.arc(node.x, node.y, node.isConnector ? 4 : 6, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Draw emoji label (skip for connector nodes)
+    if (!node.isConnector) {
+      ctx.font = "16px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      const emoji = node.emoji || "❓";
+      ctx.fillText(emoji, node.x, node.y - 14);
+    }
+  });
+  
+  ctx.restore();
+}
+
 function draw(nodes, links) {
+  // Use specialized drawing for linkograph mode
+  if (renderMode.value === 'Linkograph') {
+    drawLinkograph(nodes, links);
+    return;
+  }
+  
   ctx.clearRect(0, 0, width.value, height.value);
   
   // Apply zoom and pan translation
@@ -68,10 +135,12 @@ function draw(nodes, links) {
     const isLabelHi = renderMode.value === 'Labeled Arrows' && l.isLabelHighlight;
     ctx.strokeStyle = isRecipe ? "#ff0000" : (isLabelHi ? "#1e90ff" : "#888");
     ctx.lineWidth = (isRecipe || isLabelHi) ? 2 : 1;
+    ctx.globalAlpha = isRecipe ? 0.7 : (isLabelHi ? 0.6 : 0.3);
     ctx.beginPath();
     ctx.moveTo(l.source.x, l.source.y);
     ctx.lineTo(l.target.x, l.target.y);
     ctx.stroke();
+    ctx.globalAlpha = 1;
     ctx.lineWidth = 1;
 
     // Arrowhead per link
@@ -398,7 +467,7 @@ function onMouseLeave() {
 }
 
 function setZoomToViewCenter(newZoom) {
-  const clampedZoom = Math.max(0.5, Math.min(3, newZoom));
+  const clampedZoom = Math.max(0.1, Math.min(3, newZoom));
   const oldZoom = zoomLevel.value || 1;
   if (clampedZoom === oldZoom) return;
 
@@ -432,6 +501,168 @@ function resetZoom() {
   panY.value = 0;
 }
 
+function buildLinkograph(activeLinks) {
+  // Create nodes in chronological order (duplicates allowed)
+  expandedNodes = [];
+  expandedLinks = [];
+  
+  // Track which material IDs we've seen and their chronological indices
+  const nodeIndexMap = new Map(); // materialId -> array of node indices
+  let chrono = 0; // Chronological counter for positioning
+  
+  // Start with base materials
+  const baseMaterials = ['Fire', 'Water', 'Earth', 'Air'];
+  baseMaterials.forEach(matId => {
+    const nodeData = allNodes.find(n => n.id === matId);
+    if (nodeData) {
+      const node = {
+        id: nodeData.id,
+        label: nodeData.label,
+        emoji: nodeData.emoji,
+        type: nodeData.type,
+        chronoIndex: chrono++,
+        isConnector: false
+      };
+      expandedNodes.push(node);
+      if (!nodeIndexMap.has(matId)) nodeIndexMap.set(matId, []);
+      nodeIndexMap.get(matId).push(expandedNodes.length - 1);
+    }
+  });
+  
+  const baseY = height.value / 2;
+  const nodeSpacing = 80;
+  const padding = 50;
+  
+  // Process each combination in chronological order
+  activeLinks.forEach((link, linkIndex) => {
+    const { from1, from2, to } = link;
+    const recipeKey = `${from1}_${from2}_${to}`;
+    
+    // Find most recent instances of from1 and from2
+    const from1Indices = nodeIndexMap.get(from1) || [];
+    const from2Indices = nodeIndexMap.get(from2) || [];
+    
+    if (from1Indices.length === 0 || from2Indices.length === 0) {
+      console.warn(`Missing prerequisite nodes for ${recipeKey}`);
+      return;
+    }
+    
+    // Use the most recent (last) occurrence of each
+    const sourceNode1 = expandedNodes[from1Indices[from1Indices.length - 1]];
+    const sourceNode2 = expandedNodes[from2Indices[from2Indices.length - 1]];
+    
+    // Create result node (even if it's a duplicate)
+    const resultNodeData = allNodes.find(n => n.id === to);
+    if (resultNodeData) {
+      const resultNode = {
+        id: resultNodeData.id,
+        label: resultNodeData.label,
+        emoji: resultNodeData.emoji,
+        type: resultNodeData.type,
+        chronoIndex: chrono++,
+        isConnector: false
+      };
+      expandedNodes.push(resultNode);
+      
+      if (!nodeIndexMap.has(to)) nodeIndexMap.set(to, []);
+      nodeIndexMap.get(to).push(expandedNodes.length - 1);
+      
+      // Create two connector nodes for this combination
+      const connector1Node = {
+        id: `_connector_${linkIndex}_1`,
+        label: `${sourceNode1.label} to ${resultNode.label}`,
+        emoji: "",
+        type: "connector",
+        isConnector: true,
+        isLabelHighlight: false,
+        isRecipe: false
+      };
+      
+      const connector2Node = {
+        id: `_connector_${linkIndex}_2`,
+        label: `${sourceNode2.label} to ${resultNode.label}`,
+        emoji: "",
+        type: "connector",
+        isConnector: true,
+        isLabelHighlight: false,
+        isRecipe: false
+      };
+      
+      expandedNodes.push(connector1Node);
+      expandedNodes.push(connector2Node);
+      
+      // Position connector nodes based on the formula: [(a.x + b.x)/2, line.y - (b.x - a.x)/2]
+      const x1 = padding + sourceNode1.chronoIndex * nodeSpacing;
+      const x3 = padding + resultNode.chronoIndex * nodeSpacing;
+      const x2 = padding + sourceNode2.chronoIndex * nodeSpacing;
+      
+      connector1Node.x = (x1 + x3) / 2;
+      connector1Node.y = baseY - Math.abs(x3 - x1) / 2;
+      
+      connector2Node.x = (x2 + x3) / 2;
+      connector2Node.y = baseY - Math.abs(x3 - x2) / 2;
+      
+      // Create edges: source1 -> connector1 -> result
+      const edge1_1 = {
+        source: sourceNode1,
+        target: connector1Node,
+        recipeKey,
+        isRecipe: false,
+        isLabelHighlight: false
+      };
+      const edge1_2 = {
+        source: connector1Node,
+        target: resultNode,
+        recipeKey,
+        isRecipe: false,
+        isLabelHighlight: false
+      };
+      
+      // Create edges: source2 -> connector2 -> result
+      const edge2_1 = {
+        source: sourceNode2,
+        target: connector2Node,
+        recipeKey,
+        isRecipe: false,
+        isLabelHighlight: false
+      };
+      const edge2_2 = {
+        source: connector2Node,
+        target: resultNode,
+        recipeKey,
+        isRecipe: false,
+        isLabelHighlight: false
+      };
+      
+      expandedLinks.push(edge1_1, edge1_2, edge2_1, edge2_2);
+    }
+  });
+  
+  // Update recipe path
+  currentRecipeMap = {};
+  activeLinks.forEach(l => {
+    if (!currentRecipeMap[l.to]) {
+      currentRecipeMap[l.to] = [l.from1, l.from2];
+    }
+  });
+  
+  const goalMaterial = activeLinks[activeLinks.length - 1]?.to;
+  recipePathEdges = goalMaterial ? findPathToNode(goalMaterial) : new Set();
+  
+  // Mark recipe links
+  expandedLinks.forEach(link => {
+    link.isRecipe = recipePathEdges.has(link.recipeKey);
+  });
+  
+  // Apply linkograph layout (positions all nodes including connectors)
+  layoutLinkograph(expandedNodes);
+  
+  storedNodes.value = expandedNodes;
+  
+  // Draw immediately (no force simulation for linkograph)
+  draw(expandedNodes, expandedLinks);
+}
+
 function rebuildGraphForTimeline(fullReset = false) {
   if (!originalLinks || originalLinks.length === 0 || !allNodes) return;
   
@@ -451,6 +682,12 @@ function rebuildGraphForTimeline(fullReset = false) {
       simulation.stop();
       simulation = null;
     }
+  }
+  
+  // Handle Linkograph mode separately
+  if (renderMode.value === 'Linkograph') {
+    buildLinkograph(activeLinks);
+    return;
   }
   
   // Step 1: Build what SHOULD exist depending on render mode
@@ -696,14 +933,14 @@ watch(combinationCount, async () => {
 
 // Watch zoom level and redraw
 watch(zoomLevel, () => {
-  if (simulation && expandedNodes.length > 0) {
+  if (expandedNodes.length > 0) {
     draw(expandedNodes, expandedLinks);
   }
 });
 
 // Watch pan and redraw
 watch([panX, panY], () => {
-  if (simulation && expandedNodes.length > 0) {
+  if (expandedNodes.length > 0) {
     draw(expandedNodes, expandedLinks);
   }
 });
@@ -760,6 +997,7 @@ onBeforeUnmount(() => {
         <select v-model="renderMode" class="text-sm border border-gray-300 rounded px-2 py-1">
           <option value="Combination Nodes">Combination Nodes</option>
           <option value="Labeled Arrows">Labeled Arrows</option>
+          <option value="Linkograph">Linkograph</option>
         </select>
       </div>
       <div class="flex items-center gap-3">
