@@ -78,17 +78,36 @@ function drawLinkograph(nodes, links) {
   ctx.scale(zoomLevel.value, zoomLevel.value);
   ctx.translate(-width.value / 2, -height.value / 2);
 
-  // Draw edges (straight lines, no weights)
+  // Draw edges separately by type
+  const baseY = height.value / 2;
+  
+  // First, draw duplicate links below the line
   links.forEach(link => {
-    const isRecipe = link.isRecipe;
-    ctx.strokeStyle = isRecipe ? "#ff0000" : "#888";
-    ctx.lineWidth = isRecipe ? 2 : 1;
-    ctx.globalAlpha = isRecipe ? 0.7 : 0.4;
-    
-    ctx.beginPath();
-    ctx.moveTo(link.source.x, link.source.y);
-    ctx.lineTo(link.target.x, link.target.y);
-    ctx.stroke();
+    if (link.isDuplicate) {
+      ctx.strokeStyle = "#666";
+      ctx.lineWidth = 1;
+      ctx.globalAlpha = 0.3;
+      
+      ctx.beginPath();
+      ctx.moveTo(link.source.x, link.source.y);
+      ctx.lineTo(link.target.x, link.target.y);
+      ctx.stroke();
+    }
+  });
+  
+  // Then, draw recipe edges above the line
+  links.forEach(link => {
+    if (!link.isDuplicate) {
+      const isRecipe = link.isRecipe;
+      ctx.strokeStyle = isRecipe ? "#ff0000" : "#888";
+      ctx.lineWidth = isRecipe ? 2 : 1;
+      ctx.globalAlpha = isRecipe ? 0.7 : 0.4;
+      
+      ctx.beginPath();
+      ctx.moveTo(link.source.x, link.source.y);
+      ctx.lineTo(link.target.x, link.target.y);
+      ctx.stroke();
+    }
   });
   ctx.globalAlpha = 1;
 
@@ -547,9 +566,9 @@ function buildLinkograph(activeLinks) {
       return;
     }
     
-    // Use the most recent (last) occurrence of each
-    const sourceNode1 = expandedNodes[from1Indices[from1Indices.length - 1]];
-    const sourceNode2 = expandedNodes[from2Indices[from2Indices.length - 1]];
+    // Use the FIRST occurrence of each (original), not the most recent
+    const sourceNode1 = expandedNodes[from1Indices[0]];
+    const sourceNode2 = expandedNodes[from2Indices[0]];
     
     // Create result node (even if it's a duplicate)
     const resultNodeData = allNodes.find(n => n.id === to);
@@ -652,6 +671,67 @@ function buildLinkograph(activeLinks) {
   // Mark recipe links
   expandedLinks.forEach(link => {
     link.isRecipe = recipePathEdges.has(link.recipeKey);
+  });
+  
+  // Add duplicate links: each duplicate node connects to its first occurrence
+  const firstOccurrence = new Map(); // materialId -> first node index
+  expandedNodes.forEach((node, idx) => {
+    if (!node.isConnector && node.id) {
+      if (!firstOccurrence.has(node.id)) {
+        firstOccurrence.set(node.id, idx);
+      }
+    }
+  });
+  
+  // For each duplicate (not first occurrence), add a link to the original
+  expandedNodes.forEach((node, idx) => {
+    if (!node.isConnector && node.id) {
+      const firstIdx = firstOccurrence.get(node.id);
+      if (firstIdx !== idx) {
+        // This is a duplicate - link it to the original
+        const originalNode = expandedNodes[firstIdx];
+        
+        // Create a connector-like node below the line for the duplicate link
+        const duplicateConnectorNode = {
+          id: `_dup_connector_${node.id}_${idx}`,
+          label: `duplicate ${node.label}`,
+          emoji: "",
+          type: "duplicateConnector",
+          isConnector: true,
+          isLabelHighlight: false,
+          isRecipe: false,
+          isDuplicate: true
+        };
+        
+        expandedNodes.push(duplicateConnectorNode);
+        
+        // Position the connector below the line
+        const baseY = height.value / 2;
+        const nodeSpacing = 80;
+        const padding = 50;
+        const xNode = padding + node.chronoIndex * nodeSpacing;
+        const xOriginal = padding + originalNode.chronoIndex * nodeSpacing;
+        
+        duplicateConnectorNode.x = (xNode + xOriginal) / 2;
+        duplicateConnectorNode.y = baseY + Math.abs(xOriginal - xNode) / 2; // Below the line (positive offset)
+        
+        // Create two edges: node -> connector -> original
+        expandedLinks.push({
+          source: node,
+          target: duplicateConnectorNode,
+          isDuplicate: true,
+          isRecipe: false,
+          isLabelHighlight: false
+        });
+        expandedLinks.push({
+          source: duplicateConnectorNode,
+          target: originalNode,
+          isDuplicate: true,
+          isRecipe: false,
+          isLabelHighlight: false
+        });
+      }
+    }
   });
   
   // Apply linkograph layout (positions all nodes including connectors)
