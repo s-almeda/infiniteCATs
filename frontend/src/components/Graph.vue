@@ -501,17 +501,17 @@ function setZoomToViewCenter(newZoom) {
 
 function onWheel(event) {
   event.preventDefault();
-  const zoomSpeed = 0.1;
+  const zoomSpeed = 0.03;
   const direction = event.deltaY > 0 ? -1 : 1;
   setZoomToViewCenter(zoomLevel.value + direction * zoomSpeed);
 }
 
 function zoomIn() {
-  setZoomToViewCenter(zoomLevel.value + 0.2);
+  setZoomToViewCenter(zoomLevel.value + 0.08);
 }
 
 function zoomOut() {
-  setZoomToViewCenter(zoomLevel.value - 0.2);
+  setZoomToViewCenter(zoomLevel.value - 0.08);
 }
 
 function resetZoom() {
