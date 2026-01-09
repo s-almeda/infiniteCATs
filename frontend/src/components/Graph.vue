@@ -133,8 +133,8 @@ function drawLinkograph(nodes, links) {
 }
 
 function draw(nodes, links) {
-  // Use specialized drawing for linkograph mode
-  if (renderMode.value === 'Linkograph') {
+  // Use specialized drawing for linkograph and path linkography modes
+  if (renderMode.value === 'Linkograph' || renderMode.value === 'Path Linkography') {
     drawLinkograph(nodes, links);
     return;
   }
@@ -486,7 +486,7 @@ function onMouseLeave() {
 }
 
 function setZoomToViewCenter(newZoom) {
-  const clampedZoom = Math.max(0.1, Math.min(3, newZoom));
+  const clampedZoom = Math.max(0.02, Math.min(3, newZoom));
   const oldZoom = zoomLevel.value || 1;
   if (clampedZoom === oldZoom) return;
 
@@ -518,6 +518,236 @@ function resetZoom() {
   zoomLevel.value = 1;
   panX.value = 0;
   panY.value = 0;
+}
+
+function buildPathLinkography(activeLinks) {
+  // Create nodes in chronological order (duplicates allowed)
+  expandedNodes = [];
+  expandedLinks = [];
+  
+  // Track which material IDs we've seen and their chronological indices
+  const nodeIndexMap = new Map(); // materialId -> array of node indices
+  let chrono = 0; // Chronological counter for positioning
+  
+  // Start with base materials
+  const baseMaterials = ['Fire', 'Water', 'Earth', 'Air'];
+  baseMaterials.forEach(matId => {
+    const nodeData = allNodes.find(n => n.id === matId);
+    if (nodeData) {
+      const node = {
+        id: nodeData.id,
+        label: nodeData.label,
+        emoji: nodeData.emoji,
+        type: nodeData.type,
+        chronoIndex: chrono++,
+        isConnector: false
+      };
+      expandedNodes.push(node);
+      if (!nodeIndexMap.has(matId)) nodeIndexMap.set(matId, []);
+      nodeIndexMap.get(matId).push(expandedNodes.length - 1);
+    }
+  });
+  
+  const baseY = height.value / 2;
+  const nodeSpacing = 80;
+  const padding = 50;
+  
+  // Build recipe map incrementally as we process links
+  const incrementalRecipeMap = {};
+  
+  // Process each combination in chronological order
+  activeLinks.forEach((link, linkIndex) => {
+    const { from1, from2, to } = link;
+    const recipeKey = `${from1}_${from2}_${to}`;
+    
+    // Add this recipe to the incremental map
+    if (!incrementalRecipeMap[to]) {
+      incrementalRecipeMap[to] = [from1, from2];
+    }
+    
+    // Find most recent instances of from1 and from2
+    const from1Indices = nodeIndexMap.get(from1) || [];
+    const from2Indices = nodeIndexMap.get(from2) || [];
+    
+    if (from1Indices.length === 0 || from2Indices.length === 0) {
+      console.warn(`Missing prerequisite nodes for ${recipeKey}`);
+      return;
+    }
+    
+    // Use the FIRST occurrence of each (original), not the most recent
+    const sourceNode1 = expandedNodes[from1Indices[0]];
+    const sourceNode2 = expandedNodes[from2Indices[0]];
+    
+    // Create result node (even if it's a duplicate)
+    const resultNodeData = allNodes.find(n => n.id === to);
+    if (resultNodeData) {
+      const resultNode = {
+        id: resultNodeData.id,
+        label: resultNodeData.label,
+        emoji: resultNodeData.emoji,
+        type: resultNodeData.type,
+        chronoIndex: chrono++,
+        isConnector: false
+      };
+      expandedNodes.push(resultNode);
+      
+      if (!nodeIndexMap.has(to)) nodeIndexMap.set(to, []);
+      nodeIndexMap.get(to).push(expandedNodes.length - 1);
+      
+      // PATH LINKOGRAPHY: Create edges to ALL nodes in the recipe dependency path
+      // Find all nodes that are needed to create this result, up to this point in time
+      const dependencySet = new Set(); // Set of node indices this result depends on
+      
+      // Trace recipe paths for both from1 and from2, but only use nodes created before this result
+      const visited = new Set();
+      const stack = [from1, from2];
+      const baseSet = new Set(['Fire', 'Water', 'Earth', 'Air']);
+      
+      while (stack.length) {
+        const material = stack.pop();
+        if (visited.has(material)) continue;
+        visited.add(material);
+        
+        // Find the FIRST occurrence of this material (it must exist before current)
+        const materialIndices = nodeIndexMap.get(material);
+        if (materialIndices && materialIndices.length > 0) {
+          const firstOccurrenceIdx = materialIndices[0];
+          // Only add if it's not the result itself
+          if (expandedNodes[firstOccurrenceIdx].id !== to) {
+            dependencySet.add(firstOccurrenceIdx);
+          }
+        }
+        
+        // Trace back further if this material is made from other materials
+        if (!baseSet.has(material)) {
+          const comps = incrementalRecipeMap[material];
+          if (Array.isArray(comps) && comps.length === 2) {
+            const [comp1, comp2] = comps;
+            if (!visited.has(comp1)) stack.push(comp1);
+            if (!visited.has(comp2)) stack.push(comp2);
+          }
+        }
+      }
+      
+      // Create connector and edges to each dependency
+      dependencySet.forEach((depIdx) => {
+        const depNode = expandedNodes[depIdx];
+        
+        // Create a connector node for this dependency path
+        const connectorNode = {
+          id: `_path_connector_${resultNode.id}_${depNode.id}_${linkIndex}`,
+          label: `${depNode.label} to ${resultNode.label}`,
+          emoji: "",
+          type: "connector",
+          isConnector: true,
+          isLabelHighlight: false,
+          isRecipe: false
+        };
+        
+        expandedNodes.push(connectorNode);
+        
+        // Position connector between dep and result
+        const xDep = padding + depNode.chronoIndex * nodeSpacing;
+        const xRes = padding + resultNode.chronoIndex * nodeSpacing;
+        
+        connectorNode.x = (xDep + xRes) / 2;
+        connectorNode.y = baseY - Math.abs(xRes - xDep) / 2; // Above the line
+        
+        // Create edges: dep -> connector -> result
+        expandedLinks.push({
+          source: depNode,
+          target: connectorNode,
+          recipeKey: `${depNode.id}_${resultNode.id}`,
+          isRecipe: false,
+          isLabelHighlight: false
+        });
+        expandedLinks.push({
+          source: connectorNode,
+          target: resultNode,
+          recipeKey: `${depNode.id}_${resultNode.id}`,
+          isRecipe: false,
+          isLabelHighlight: false
+        });
+      });
+    }
+  });
+  
+  // Update recipe path
+  currentRecipeMap = incrementalRecipeMap;
+  
+  const goalMaterial = activeLinks[activeLinks.length - 1]?.to;
+  recipePathEdges = goalMaterial ? findPathToNode(goalMaterial) : new Set();
+  
+  // Mark recipe links
+  expandedLinks.forEach(link => {
+    link.isRecipe = recipePathEdges.has(link.recipeKey);
+  });
+  
+  // Add duplicate links: each duplicate node connects to its first occurrence
+  const firstOccurrence = new Map(); // materialId -> first node index
+  expandedNodes.forEach((node, idx) => {
+    if (!node.isConnector && node.id) {
+      if (!firstOccurrence.has(node.id)) {
+        firstOccurrence.set(node.id, idx);
+      }
+    }
+  });
+  
+  // For each duplicate (not first occurrence), add a link to the original
+  expandedNodes.forEach((node, idx) => {
+    if (!node.isConnector && node.id) {
+      const firstIdx = firstOccurrence.get(node.id);
+      if (firstIdx !== idx) {
+        // This is a duplicate - link it to the original
+        const originalNode = expandedNodes[firstIdx];
+        
+        // Create a connector-like node below the line for the duplicate link
+        const duplicateConnectorNode = {
+          id: `_dup_connector_${node.id}_${idx}`,
+          label: `duplicate ${node.label}`,
+          emoji: "",
+          type: "duplicateConnector",
+          isConnector: true,
+          isLabelHighlight: false,
+          isRecipe: false,
+          isDuplicate: true
+        };
+        
+        expandedNodes.push(duplicateConnectorNode);
+        
+        // Position the connector below the line
+        const xNode = padding + node.chronoIndex * nodeSpacing;
+        const xOriginal = padding + originalNode.chronoIndex * nodeSpacing;
+        
+        duplicateConnectorNode.x = (xNode + xOriginal) / 2;
+        duplicateConnectorNode.y = baseY + Math.abs(xOriginal - xNode) / 2; // Below the line (positive offset)
+        
+        // Create two edges: node -> connector -> original
+        expandedLinks.push({
+          source: node,
+          target: duplicateConnectorNode,
+          isDuplicate: true,
+          isRecipe: false,
+          isLabelHighlight: false
+        });
+        expandedLinks.push({
+          source: duplicateConnectorNode,
+          target: originalNode,
+          isDuplicate: true,
+          isRecipe: false,
+          isLabelHighlight: false
+        });
+      }
+    }
+  });
+  
+  // Apply linkograph layout (positions all nodes including connectors)
+  layoutLinkograph(expandedNodes);
+  
+  storedNodes.value = expandedNodes;
+  
+  // Draw immediately (no force simulation for path linkography)
+  draw(expandedNodes, expandedLinks);
 }
 
 function buildLinkograph(activeLinks) {
@@ -767,6 +997,12 @@ function rebuildGraphForTimeline(fullReset = false) {
   // Handle Linkograph mode separately
   if (renderMode.value === 'Linkograph') {
     buildLinkograph(activeLinks);
+    return;
+  }
+  
+  // Handle Path Linkography mode separately
+  if (renderMode.value === 'Path Linkography') {
+    buildPathLinkography(activeLinks);
     return;
   }
   
@@ -1078,6 +1314,7 @@ onBeforeUnmount(() => {
           <option value="Combination Nodes">Combination Nodes</option>
           <option value="Labeled Arrows">Labeled Arrows</option>
           <option value="Linkograph">Linkograph</option>
+          <option value="Path Linkography">Path Linkography</option>
         </select>
       </div>
       <div class="flex items-center gap-3">
