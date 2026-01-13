@@ -45,6 +45,14 @@ let lastActiveCount = 0; // Track last active count to compute diff
 let isPanning = false;
 let panStartX = 0;
 let panStartY = 0;
+let communityAssignments = {}; // nodeId -> communityId
+let communityColors = {}; // nodeId -> color string
+const communitySummaries = ref([]);
+const COMMUNITY_PARAMS = {
+  gamma: 0.5,      // < 1 => coarser communities; > 1 => finer communities
+  maxPasses: 50,   // number of local-move sweeps
+  minGain: -1e-6   // allow tiny negative to avoid getting stuck
+};
 
 function getEmojiFor(id) {
   if (!allNodes) return "";
@@ -115,7 +123,8 @@ function drawLinkograph(nodes, links) {
   nodes.forEach(node => {
     // Draw node circle
     ctx.beginPath();
-    ctx.fillStyle = node.isConnector ? "#ff9500" : "#219ebc";
+    const nodeColor = (!node.isConnector && communityColors[node.id]) ? communityColors[node.id] : (node.isConnector ? "#ff9500" : "#219ebc");
+    ctx.fillStyle = nodeColor;
     ctx.arc(node.x, node.y, node.isConnector ? 4 : 6, 0, Math.PI * 2);
     ctx.fill();
 
@@ -215,8 +224,8 @@ function draw(nodes, links) {
   // nodes
   nodes.forEach(n => {
     ctx.beginPath();
-    ctx.fillStyle =
-      n.type === "combination" ? "#ffb703" : "#219ebc";
+    const color = (!n.isConnector && communityColors[n.id]) ? communityColors[n.id] : (n.type === "combination" ? "#ffb703" : "#219ebc");
+    ctx.fillStyle = color;
     ctx.arc(n.x, n.y, 6, 0, Math.PI * 2);
     ctx.fill();
 
@@ -366,6 +375,153 @@ function updateRecipePath(targetMaterial) {
   if (expandedNodes.length > 0 && expandedLinks.length > 0) {
     draw(expandedNodes, expandedLinks);
   }
+}
+
+function computeCommunities(nodes, links, params = COMMUNITY_PARAMS) {
+  // Louvain-style modularity heuristic on an undirected, unweighted graph derived from links
+  const nodeIds = nodes.map(n => n.id);
+  const idToIndex = new Map(nodeIds.map((id, idx) => [id, idx]));
+  const adjacency = new Map(); // id -> Map(neighborId -> weight)
+
+  const addEdge = (a, b) => {
+    if (!a || !b) return;
+    if (!adjacency.has(a)) adjacency.set(a, new Map());
+    if (!adjacency.has(b)) adjacency.set(b, new Map());
+    const wa = adjacency.get(a);
+    const wb = adjacency.get(b);
+    wa.set(b, (wa.get(b) || 0) + 1);
+    wb.set(a, (wb.get(a) || 0) + 1);
+  };
+
+  // Build undirected edges from combination links: connect from1->to and from2->to
+  links.forEach(l => {
+    let added = false;
+    if (l.from1 && l.to) {
+      addEdge(l.from1, l.to);
+      added = true;
+    }
+    if (l.from2 && l.to) {
+      addEdge(l.from2, l.to);
+      added = true;
+    }
+    if (!added) {
+      const a = l.source?.id ?? l.source;
+      const b = l.target?.id ?? l.target ?? l.to;
+      addEdge(a, b);
+    }
+  });
+
+  // Degrees and total edge weight
+  const degrees = new Map();
+  let m2 = 0; // 2 * total weight
+  adjacency.forEach((neighbors, id) => {
+    let d = 0;
+    neighbors.forEach(w => { d += w; });
+    degrees.set(id, d);
+    m2 += d;
+  });
+  if (m2 === 0) {
+    // No edges: each node its own community
+    const assignment = {};
+    nodeIds.forEach((id, idx) => { assignment[id] = idx; });
+    return assignment;
+  }
+
+  // Initial communities
+  let community = new Map(); // nodeId -> communityId
+  let communityWeight = new Map(); // communityId -> sum of degrees
+  nodeIds.forEach(id => {
+    community.set(id, id);
+    communityWeight.set(id, degrees.get(id) || 0);
+  });
+
+  let moved = true;
+  const maxPasses = params.maxPasses ?? 10;
+  let pass = 0;
+  while (moved && pass < maxPasses) {
+    moved = false;
+    pass++;
+    // iterate nodes (fixed order is fine for our scale)
+    nodeIds.forEach(id => {
+      const currentComm = community.get(id);
+      const k_i = degrees.get(id) || 0;
+      const neighbors = adjacency.get(id) || new Map();
+
+      // Remove node from current community temporarily
+      communityWeight.set(currentComm, (communityWeight.get(currentComm) || 0) - k_i);
+
+      // Compute k_i_in for neighbor communities
+      const communityConnections = new Map();
+      neighbors.forEach((w, nb) => {
+        const commNb = community.get(nb);
+        communityConnections.set(commNb, (communityConnections.get(commNb) || 0) + w);
+      });
+
+      let bestComm = currentComm;
+      let bestGain = 0;
+      const m = m2 / 2;
+      communityConnections.forEach((k_i_in, comm) => {
+        const tot = communityWeight.get(comm) || 0;
+        const gamma = params.gamma ?? 1.0;
+        const gain = k_i_in - gamma * (k_i * tot) / m2;
+        if (gain > bestGain) {
+          bestGain = gain;
+          bestComm = comm;
+        }
+      });
+
+      // Restore weight to chosen community
+      communityWeight.set(bestComm, (communityWeight.get(bestComm) || 0) + k_i);
+
+      const minGain = params.minGain ?? 0;
+      if (bestComm !== currentComm && bestGain > minGain) {
+        community.set(id, bestComm);
+        moved = true;
+      }
+    });
+  }
+
+  const assignment = {};
+  nodeIds.forEach(id => { assignment[id] = community.get(id); });
+  return assignment;
+}
+
+function assignCommunityColors(assignments) {
+  const colors = {};
+  const commToColor = new Map();
+  let idx = 0;
+  Object.entries(assignments).forEach(([nodeId, commId]) => {
+    if (!commToColor.has(commId)) {
+      const hue = (idx * 137) % 360; // golden angle for spacing
+      commToColor.set(commId, `hsl(${hue}, 65%, 55%)`);
+      idx++;
+    }
+    colors[nodeId] = commToColor.get(commId);
+  });
+  return colors;
+}
+
+function buildCommunitySummaries(assignments, colors, nodes) {
+  const group = new Map();
+  nodes.forEach(n => {
+    if (!n || n.type === "combination" || n.isConnector) return;
+    const comm = assignments[n.id];
+    if (comm === undefined) return;
+    if (!group.has(comm)) group.set(comm, { color: null, nodes: [] });
+    const entry = group.get(comm);
+    entry.color = entry.color || colors[n.id] || '#219ebc';
+    entry.nodes.push(n);
+  });
+
+  return [...group.entries()].map(([commId, { color, nodes }]) => {
+    const labels = nodes.slice(0, 5).map(n => n.label || n.id);
+    return {
+      id: commId,
+      color,
+      count: nodes.length,
+      labels
+    };
+  }).sort((a, b) => b.count - a.count);
 }
 
 function handleNodeClick(node) {
@@ -1207,6 +1363,11 @@ async function loadGraphData() {
     originalLinks = links;
     allNodes = nodes;
     
+    // Compute communities and assign colors (Louvain-style heuristic)
+    communityAssignments = computeCommunities(allNodes, originalLinks, COMMUNITY_PARAMS);
+    communityColors = assignCommunityColors(communityAssignments);
+    communitySummaries.value = buildCommunitySummaries(communityAssignments, communityColors, allNodes);
+    
     // Initial recipe path will be computed locally via findPathToNode during rebuild
     recipePathEdges = new Set();
     
@@ -1282,51 +1443,70 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div
-    class="relative inline-block border border-gray-300 rounded-md shadow-sm"
-    @mousemove="onMouseMove"
-    @mouseleave="onMouseLeave"
-    @mousedown="onMouseDown"
-    @mouseup="onMouseUp"
-    @wheel="onWheel"
-    @contextmenu.prevent
-  >
-    <canvas
-      ref="canvas"
-      :width="width"
-      :height="height"
-    />
+  <div class="flex flex-col gap-4 items-start">
     <div
-      v-if="hoverNode"
-      class="absolute bg-white border border-gray-300 rounded px-2 py-1 text-sm shadow"
-      :style="{ left: `${hoverPos.x + 10}px`, top: `${hoverPos.y + 10}px` }">
-      {{ hoverNode }}
-    </div>
-    <div class="absolute top-2 right-2 flex gap-2">
-      <button @click="zoomIn" class="bg-blue-500 text-white px-3 py-1 rounded text-sm hover:bg-blue-600">+</button>
-      <button @click="resetZoom" class="bg-gray-500 text-white px-3 py-1 rounded text-sm hover:bg-gray-600">Reset</button>
-      <button @click="zoomOut" class="bg-blue-500 text-white px-3 py-1 rounded text-sm hover:bg-blue-600">−</button>
-    </div>
-    <div class="absolute bottom-2 left-2 right-2 bg-white border border-gray-300 rounded px-4 py-3 shadow" @wheel.stop @mousedown.stop>
-      <div class="flex items-center gap-3 mb-3">
-        <label class="text-sm font-medium whitespace-nowrap">Render Mode:</label>
-        <select v-model="renderMode" class="text-sm border border-gray-300 rounded px-2 py-1">
-          <option value="Combination Nodes">Combination Nodes</option>
-          <option value="Labeled Arrows">Labeled Arrows</option>
-          <option value="Linkograph">Linkograph</option>
-          <option value="Path Linkography">Path Linkography</option>
-        </select>
+      class="relative inline-block border border-gray-300 rounded-md shadow-sm"
+      @mousemove="onMouseMove"
+      @mouseleave="onMouseLeave"
+      @mousedown="onMouseDown"
+      @mouseup="onMouseUp"
+      @wheel="onWheel"
+      @contextmenu.prevent
+    >
+      <canvas
+        ref="canvas"
+        :width="width"
+        :height="height"
+      />
+      <div
+        v-if="hoverNode"
+        class="absolute bg-white border border-gray-300 rounded px-2 py-1 text-sm shadow"
+        :style="{ left: `${hoverPos.x + 10}px`, top: `${hoverPos.y + 10}px` }">
+        {{ hoverNode }}
       </div>
-      <div class="flex items-center gap-3">
-        <label class="text-sm font-medium whitespace-nowrap">Timeline: {{ timePercentage }}%</label>
-        <input 
-          type="range" 
-          v-model="timePercentage" 
-          min="1" 
-          max="100" 
-          step="1"
-          class="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
-        />
+      <div class="absolute top-2 right-2 flex gap-2">
+        <button @click="zoomIn" class="bg-blue-500 text-white px-3 py-1 rounded text-sm hover:bg-blue-600">+</button>
+        <button @click="resetZoom" class="bg-gray-500 text-white px-3 py-1 rounded text-sm hover:bg-gray-600">Reset</button>
+        <button @click="zoomOut" class="bg-blue-500 text-white px-3 py-1 rounded text-sm hover:bg-blue-600">−</button>
+      </div>
+      <div class="absolute bottom-2 left-2 right-2 bg-white border border-gray-300 rounded px-4 py-3 shadow" @wheel.stop @mousedown.stop>
+        <div class="flex items-center gap-3 mb-3">
+          <label class="text-sm font-medium whitespace-nowrap">Render Mode:</label>
+          <select v-model="renderMode" class="text-sm border border-gray-300 rounded px-2 py-1">
+            <option value="Combination Nodes">Combination Nodes</option>
+            <option value="Labeled Arrows">Labeled Arrows</option>
+            <option value="Linkograph">Linkograph</option>
+            <option value="Path Linkography">Path Linkography</option>
+          </select>
+        </div>
+        <div class="flex items-center gap-3">
+          <label class="text-sm font-medium whitespace-nowrap">Timeline: {{ timePercentage }}%</label>
+          <input 
+            type="range" 
+            v-model="timePercentage" 
+            min="1" 
+            max="100" 
+            step="1"
+            class="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+          />
+        </div>
+      </div>
+    </div>
+
+    <div class="w-full max-w-4xl border border-gray-200 rounded-md p-3 bg-white shadow-sm">
+      <h3 class="text-sm font-semibold mb-2">Communities</h3>
+      <div class="flex flex-col gap-2">
+        <div v-if="communitySummaries.length === 0" class="text-xs text-gray-500">Communities will appear after data loads.</div>
+        <div
+          v-for="comm in communitySummaries"
+          :key="comm.id"
+          class="flex items-center gap-3 text-sm"
+        >
+          <span class="inline-block w-4 h-4 rounded-sm border" :style="{ backgroundColor: comm.color }"></span>
+          <span class="font-medium">Community {{ comm.id }}</span>
+          <span class="text-gray-500 text-xs">({{ comm.count }} nodes)</span>
+          <span class="text-gray-700 text-xs">Examples: {{ comm.labels.join(', ') }}</span>
+        </div>
       </div>
     </div>
   </div>
