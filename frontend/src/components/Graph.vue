@@ -89,6 +89,26 @@ function drawLinkograph(nodes, links) {
   // Draw edges separately by type
   const baseY = height.value / 2;
   
+  const linkColorFor = (link) => {
+    const src = link.source?.id ?? link.source;
+    const tgt = link.target?.id ?? link.target;
+    if (!src || !tgt) return null;
+
+    // allow combination/connector endpoints to inherit the material endpoint color
+    const srcComm = communityAssignments[src];
+    const tgtComm = communityAssignments[tgt];
+
+    if (srcComm !== undefined && tgtComm !== undefined && srcComm === tgtComm) {
+      return communityColors[src];
+    }
+
+    // If one side is a combo/connector (no community) but the other has one, use that color
+    if (srcComm !== undefined && tgtComm === undefined) return communityColors[src];
+    if (tgtComm !== undefined && srcComm === undefined) return communityColors[tgt];
+
+    return null;
+  };
+
   // First, draw duplicate links below the line
   links.forEach(link => {
     if (link.isDuplicate) {
@@ -103,13 +123,14 @@ function drawLinkograph(nodes, links) {
     }
   });
   
-  // Then, draw recipe edges above the line
+  // Then, draw recipe edges above the line (use community color if both ends share one)
   links.forEach(link => {
     if (!link.isDuplicate) {
       const isRecipe = link.isRecipe;
-      ctx.strokeStyle = isRecipe ? "#ff0000" : "#888";
+      const communityColor = isRecipe ? null : linkColorFor(link);
+      ctx.strokeStyle = communityColor || (isRecipe ? "#ff0000" : "#888");
       ctx.lineWidth = isRecipe ? 2 : 1;
-      ctx.globalAlpha = isRecipe ? 0.7 : 0.4;
+      ctx.globalAlpha = isRecipe ? 0.7 : (communityColor ? 0.5 : 0.4);
       
       ctx.beginPath();
       ctx.moveTo(link.source.x, link.source.y);
@@ -157,13 +178,35 @@ function draw(nodes, links) {
   ctx.scale(zoomLevel.value, zoomLevel.value);
   ctx.translate(-width.value / 2, -height.value / 2);
 
+  // Helper to pick a community color for a link; allow combo/connector nodes to inherit
+  const linkColorFor = (link) => {
+    const src = link.source?.id ?? link.source;
+    const tgt = link.target?.id ?? link.target;
+    if (!src || !tgt) return null;
+
+    const srcComm = communityAssignments[src];
+    const tgtComm = communityAssignments[tgt];
+
+    // both endpoints in same community
+    if (srcComm !== undefined && tgtComm !== undefined && srcComm === tgtComm) {
+      return communityColors[src];
+    }
+
+    // one endpoint is unclassified (combo/connector) — inherit from the classified side
+    if (srcComm !== undefined && tgtComm === undefined) return communityColors[src];
+    if (tgtComm !== undefined && srcComm === undefined) return communityColors[tgt];
+
+    return null;
+  };
+
   // Draw links individually for dynamic styling
   links.forEach(l => {
     const isRecipe = l.isRecipe;
     const isLabelHi = renderMode.value === 'Labeled Arrows' && l.isLabelHighlight;
-    ctx.strokeStyle = isRecipe ? "#ff0000" : (isLabelHi ? "#1e90ff" : "#888");
+    const communityColor = (!isRecipe && !isLabelHi) ? linkColorFor(l) : null;
+    ctx.strokeStyle = isRecipe ? "#ff0000" : (isLabelHi ? "#1e90ff" : (communityColor || "#888"));
     ctx.lineWidth = (isRecipe || isLabelHi) ? 2 : 1;
-    ctx.globalAlpha = isRecipe ? 0.7 : (isLabelHi ? 0.6 : 0.3);
+    ctx.globalAlpha = isRecipe ? 0.7 : (isLabelHi ? 0.6 : (communityColor ? 0.5 : 0.3));
     ctx.beginPath();
     ctx.moveTo(l.source.x, l.source.y);
     ctx.lineTo(l.target.x, l.target.y);
@@ -377,6 +420,18 @@ function updateRecipePath(targetMaterial) {
   }
 }
 
+function clearHighlights() {
+  // Reset recipe and label highlights so the underlying structure is easier to see
+  recipePathEdges = new Set();
+  markRecipePathLinks();
+  currentLabelHighlight.value = null;
+  markLabelHighlightedEdges();
+
+  if (expandedNodes.length > 0 && expandedLinks.length > 0) {
+    draw(expandedNodes, expandedLinks);
+  }
+}
+
 function computeCommunities(nodes, links, params = COMMUNITY_PARAMS) {
   // Louvain-style modularity heuristic on an undirected, unweighted graph derived from links
   const nodeIds = nodes.map(n => n.id);
@@ -487,13 +542,26 @@ function computeCommunities(nodes, links, params = COMMUNITY_PARAMS) {
 }
 
 function assignCommunityColors(assignments) {
+  // Palette avoids bright red/blue to keep recipe/label highlights readable
+  const palette = [
+    '#f4a261', // amber
+    '#6dccb5', // mint
+    '#a4c639', // olive-lime
+    '#8f5fe8', // violet
+    '#d17ba0', // rose
+    '#5ca9a5', // teal
+    '#c7b446', // ochre
+    '#6ab04c', // green
+    '#b86ee0', // purple
+    '#e6b980'  // sand
+  ];
+
   const colors = {};
   const commToColor = new Map();
   let idx = 0;
   Object.entries(assignments).forEach(([nodeId, commId]) => {
     if (!commToColor.has(commId)) {
-      const hue = (idx * 137) % 360; // golden angle for spacing
-      commToColor.set(commId, `hsl(${hue}, 65%, 55%)`);
+      commToColor.set(commId, palette[idx % palette.length]);
       idx++;
     }
     colors[nodeId] = commToColor.get(commId);
@@ -1478,6 +1546,15 @@ onBeforeUnmount(() => {
             <option value="Linkograph">Linkograph</option>
             <option value="Path Linkography">Path Linkography</option>
           </select>
+        </div>
+        <div class="flex items-center gap-3 mb-3">
+          <button
+            @click="clearHighlights"
+            class="bg-gray-700 text-white px-3 py-1 rounded text-xs hover:bg-gray-800"
+          >
+            Clear Highlights
+          </button>
+          <span class="text-xs text-gray-500">Reset recipe path and label highlights</span>
         </div>
         <div class="flex items-center gap-3">
           <label class="text-sm font-medium whitespace-nowrap">Timeline: {{ timePercentage }}%</label>
