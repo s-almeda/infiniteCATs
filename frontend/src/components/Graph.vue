@@ -34,6 +34,7 @@ const panY = ref(0);
 const timePercentage = ref(100);
 const renderMode = ref('Combination Nodes');
 const currentLabelHighlight = ref(null);
+const selectedCommunities = ref(new Set());
 let expandedNodes = [];
 let expandedLinks = [];
 let originalLinks = []; // Raw chronological links from API
@@ -142,12 +143,18 @@ function drawLinkograph(nodes, links) {
 
   // Draw nodes
   nodes.forEach(node => {
+    const commId = communityAssignments[node.id];
+    const selectionActive = selectedCommunities.value.size > 0;
+    const isSelectedComm = selectionActive && commId !== undefined && selectedCommunities.value.has(commId);
     // Draw node circle
     ctx.beginPath();
     const nodeColor = (!node.isConnector && communityColors[node.id]) ? communityColors[node.id] : (node.isConnector ? "#ff9500" : "#219ebc");
     ctx.fillStyle = nodeColor;
-    ctx.arc(node.x, node.y, node.isConnector ? 4 : 6, 0, Math.PI * 2);
+    ctx.globalAlpha = selectionActive ? (isSelectedComm ? 1 : 0.15) : 1;
+    const radius = node.isConnector ? 4 : (isSelectedComm ? 8 : 6);
+    ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
     ctx.fill();
+    ctx.globalAlpha = 1;
 
     // Draw emoji label (skip for connector nodes)
     if (!node.isConnector) {
@@ -204,9 +211,14 @@ function draw(nodes, links) {
     const isRecipe = l.isRecipe;
     const isLabelHi = renderMode.value === 'Labeled Arrows' && l.isLabelHighlight;
     const communityColor = (!isRecipe && !isLabelHi) ? linkColorFor(l) : null;
+    const selectionActive = selectedCommunities.value.size > 0;
+    const srcComm = l.source?.id ? communityAssignments[l.source.id] : communityAssignments[l.source];
+    const tgtComm = l.target?.id ? communityAssignments[l.target.id] : communityAssignments[l.target];
+    const isSelectedLink = selectionActive && ((srcComm !== undefined && selectedCommunities.value.has(srcComm)) || (tgtComm !== undefined && selectedCommunities.value.has(tgtComm)));
+
     ctx.strokeStyle = isRecipe ? "#ff0000" : (isLabelHi ? "#1e90ff" : (communityColor || "#888"));
-    ctx.lineWidth = (isRecipe || isLabelHi) ? 2 : 1;
-    ctx.globalAlpha = isRecipe ? 0.7 : (isLabelHi ? 0.6 : (communityColor ? 0.5 : 0.3));
+    ctx.lineWidth = (isRecipe || isLabelHi || isSelectedLink) ? 2.2 : 1;
+    ctx.globalAlpha = isRecipe ? 0.7 : (isLabelHi ? 0.6 : (selectionActive ? (isSelectedLink ? 0.85 : 0.12) : (communityColor ? 0.5 : 0.3)));
     ctx.beginPath();
     ctx.moveTo(l.source.x, l.source.y);
     ctx.lineTo(l.target.x, l.target.y);
@@ -266,11 +278,17 @@ function draw(nodes, links) {
 
   // nodes
   nodes.forEach(n => {
+    const commId = communityAssignments[n.id];
+    const selectionActive = selectedCommunities.value.size > 0;
+    const isSelectedComm = selectionActive && commId !== undefined && selectedCommunities.value.has(commId);
     ctx.beginPath();
     const color = (!n.isConnector && communityColors[n.id]) ? communityColors[n.id] : (n.type === "combination" ? "#ffb703" : "#219ebc");
     ctx.fillStyle = color;
-    ctx.arc(n.x, n.y, 6, 0, Math.PI * 2);
+    ctx.globalAlpha = selectionActive ? (isSelectedComm ? 1 : 0.18) : 1;
+    const radius = isSelectedComm ? 8 : 6;
+    ctx.arc(n.x, n.y, radius, 0, Math.PI * 2);
     ctx.fill();
+    ctx.globalAlpha = 1;
 
     // Draw emoji label (skip for combination nodes)
     if (n.type !== "combination") {
@@ -426,6 +444,21 @@ function clearHighlights() {
   markRecipePathLinks();
   currentLabelHighlight.value = null;
   markLabelHighlightedEdges();
+  selectedCommunities.value = new Set();
+
+  if (expandedNodes.length > 0 && expandedLinks.length > 0) {
+    draw(expandedNodes, expandedLinks);
+  }
+}
+
+function onCommunityToggle(commId, checked) {
+  const next = new Set(selectedCommunities.value);
+  if (checked) {
+    next.add(commId);
+  } else {
+    next.delete(commId);
+  }
+  selectedCommunities.value = next;
 
   if (expandedNodes.length > 0 && expandedLinks.length > 0) {
     draw(expandedNodes, expandedLinks);
@@ -1579,6 +1612,12 @@ onBeforeUnmount(() => {
           :key="comm.id"
           class="flex items-center gap-3 text-sm"
         >
+          <input
+            type="checkbox"
+            class="w-4 h-4"
+            :checked="selectedCommunities.has(comm.id)"
+            @change="onCommunityToggle(comm.id, $event.target.checked)"
+          />
           <span class="inline-block w-4 h-4 rounded-sm border" :style="{ backgroundColor: comm.color }"></span>
           <span class="font-medium">Community {{ comm.id }}</span>
           <span class="text-gray-500 text-xs">({{ comm.count }} nodes)</span>
