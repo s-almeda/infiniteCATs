@@ -420,9 +420,6 @@ def get_nodes_and_edges(username: str | None = None):
     rows = cursor.fetchall()
     conn.close()
     
-    # Goal material is always the last combination
-    goal_material = rows[-1]['resultName'] if rows else None
-
     nodes: dict[str, dict] = {}
     edges = []
 
@@ -493,31 +490,14 @@ def get_nodes_and_edges(username: str | None = None):
             'distanceTo': distanceto
         })
     
-    # Find recipe path to goal material (shortest path with lowest perUserRank)
-    recipe_path = set()
-    if goal_material:
-        def trace_recipe(material, depth):
-            # Base case: stop at base materials
-            if material in base_materials:
-                return
-            if material in recipe_map:
-                comp1, comp2, d = recipe_map[material]
-                if d > depth and depth != -1:
-                    print(f"expected depth to be leq {depth} but got {d} for {material}")
-                recipe_path.add((comp1, comp2, material))
-                trace_recipe(comp1, d - 1)
-                trace_recipe(comp2, d - 1)
-        
-        trace_recipe(goal_material, -1)
-
-    print(f"Fetched {len(nodes)} nodes and {len(edges)} edges for {scope}. Recipe path: {len(recipe_path)} edges")
-    return list(nodes.values()), edges, list(recipe_path)
+    print(f"Fetched {len(nodes)} nodes and {len(edges)} edges for {scope}.")
+    return list(nodes.values()), edges
     
 @app.route('/api/graph', methods=['GET'])
 def get_graph_data():
     username = request.args.get('username')
-    nodes, edges, recipe_path = get_nodes_and_edges(username)
-    return jsonify({'nodes': nodes, 'links': edges, 'recipePath': recipe_path})
+    nodes, edges = get_nodes_and_edges(username)
+    return jsonify({'nodes': nodes, 'links': edges})
 
 @app.route('/', methods=['GET'])
 def get_available_materials():

@@ -1200,15 +1200,15 @@ async function loadGraphData() {
       console.error("Failed to fetch graph data:", res.status);
       return;
     }
-    const { nodes, links, recipePath } = await res.json();
+    const { nodes, links } = await res.json();
     console.log("Loaded full graph data:", { nodes: nodes.length, links: links.length });
 
     // Store full data for timeline filtering
     originalLinks = links;
     allNodes = nodes;
     
-    // Store initial recipe path (for full history) as string keys
-    recipePathEdges = new Set(recipePath.map(p => `${p[0]}_${p[1]}_${p[2]}`));
+    // Initial recipe path will be computed locally via findPathToNode during rebuild
+    recipePathEdges = new Set();
     
     ctx = canvas.value.getContext("2d");
     
