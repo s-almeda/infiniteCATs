@@ -1772,16 +1772,6 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="w-full max-w-4xl border border-gray-200 rounded-md p-3 bg-white shadow-sm">
-      <h3 class="text-sm font-semibold mb-2">Community Discovery Over Time</h3>
-      <canvas
-        ref="discoveryCanvas"
-        :width="600"
-        :height="300"
-        class="w-full"
-      />
-    </div>
-
-    <div class="w-full max-w-4xl border border-gray-200 rounded-md p-3 bg-white shadow-sm">
       <h3 class="text-sm font-semibold mb-2">Communities</h3>
       <div class="flex flex-col gap-2">
         <div v-if="communitySummaries.length === 0" class="text-xs text-gray-500">Communities will appear after data loads.</div>
@@ -1802,6 +1792,16 @@ onBeforeUnmount(() => {
           <span class="text-gray-700 text-xs">Examples: {{ comm.labels.join(', ') }}</span>
         </div>
       </div>
+    </div>
+
+    <div class="w-full max-w-4xl border border-gray-200 rounded-md p-3 bg-white shadow-sm">
+      <h3 class="text-sm font-semibold mb-2">Community Discovery Over Time</h3>
+      <canvas
+        ref="discoveryCanvas"
+        :width="600"
+        :height="300"
+        class="w-full"
+      />
     </div>
   </div>
 </template>
