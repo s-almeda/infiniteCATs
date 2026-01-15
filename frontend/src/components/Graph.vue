@@ -17,6 +17,7 @@ const userStore = useUserStore();
 const { combinationCount } = storeToRefs(resourceStore);
 const { username, isLoggedIn } = storeToRefs(userStore);
 const canvas = ref(null);
+const discoveryCanvas = ref(null);
 let simulation;
 let ctx;
 let animationFrame;
@@ -623,6 +624,165 @@ function buildCommunitySummaries(assignments, colors, nodes) {
       labels
     };
   }).sort((a, b) => b.count - a.count);
+}
+
+function drawCommunityDiscoveryChart() {
+  if (!discoveryCanvas.value || !originalLinks.length || !allNodes.length) return;
+  
+  const chartCtx = discoveryCanvas.value.getContext('2d');
+  const chartWidth = discoveryCanvas.value.width;
+  const chartHeight = discoveryCanvas.value.height;
+  const padding = { top: 20, right: 20, bottom: 40, left: 50 };
+  const plotWidth = chartWidth - padding.left - padding.right;
+  const plotHeight = chartHeight - padding.top - padding.bottom;
+  
+  chartCtx.clearRect(0, 0, chartWidth, chartHeight);
+  
+  // Get top 10 largest communities
+  const largeCommunities = communitySummaries.value.slice(0, 10);
+  if (largeCommunities.length === 0) {
+    chartCtx.fillStyle = '#666';
+    chartCtx.font = '14px sans-serif';
+    chartCtx.textAlign = 'center';
+    chartCtx.fillText('No communities to display', chartWidth / 2, chartHeight / 2);
+    return;
+  }
+  
+  // Build node -> community lookup
+  const nodeToComm = communityAssignments;
+  
+  // Build community -> set of node ids
+  const commNodes = new Map();
+  largeCommunities.forEach(c => {
+    commNodes.set(c.id, new Set());
+  });
+  allNodes.forEach(n => {
+    if (!n || n.type === "combination" || n.isConnector) return;
+    const comm = nodeToComm[n.id];
+    if (comm !== undefined && commNodes.has(comm)) {
+      commNodes.get(comm).add(n.id);
+    }
+  });
+  
+  // Build discovery timeline: at each link index, track discovered nodes per community
+  const totalLinks = originalLinks.length;
+  const discoveredSets = new Map(); // commId -> Set of discovered node ids
+  largeCommunities.forEach(c => {
+    discoveredSets.set(c.id, new Set(['Fire', 'Water', 'Earth', 'Air'].filter(b => commNodes.get(c.id).has(b))));
+  });
+  
+  // Sample points (every N links to avoid too many points)
+  const sampleInterval = Math.max(1, Math.floor(totalLinks / 100));
+  const dataPoints = new Map(); // commId -> array of {x, y}
+  largeCommunities.forEach(c => {
+    dataPoints.set(c.id, []);
+  });
+  
+  // Add initial point at 0
+  largeCommunities.forEach(c => {
+    const total = commNodes.get(c.id).size;
+    const discovered = discoveredSets.get(c.id).size;
+    dataPoints.get(c.id).push({ x: 0, y: total > 0 ? (discovered / total) * 100 : 0 });
+  });
+  
+  // Process links chronologically
+  for (let i = 0; i < totalLinks; i++) {
+    const link = originalLinks[i];
+    const resultId = link.to;
+    
+    // Check if result belongs to a large community
+    const comm = nodeToComm[resultId];
+    if (comm !== undefined && discoveredSets.has(comm)) {
+      discoveredSets.get(comm).add(resultId);
+    }
+    
+    // Sample at intervals
+    if ((i + 1) % sampleInterval === 0 || i === totalLinks - 1) {
+      const xPercent = ((i + 1) / totalLinks) * 100;
+      largeCommunities.forEach(c => {
+        const total = commNodes.get(c.id).size;
+        const discovered = discoveredSets.get(c.id).size;
+        dataPoints.get(c.id).push({ x: xPercent, y: total > 0 ? (discovered / total) * 100 : 0 });
+      });
+    }
+  }
+  
+  // Draw axes
+  chartCtx.strokeStyle = '#333';
+  chartCtx.lineWidth = 1;
+  chartCtx.beginPath();
+  chartCtx.moveTo(padding.left, padding.top);
+  chartCtx.lineTo(padding.left, padding.top + plotHeight);
+  chartCtx.lineTo(padding.left + plotWidth, padding.top + plotHeight);
+  chartCtx.stroke();
+  
+  // Y-axis labels (0%, 50%, 100%)
+  chartCtx.fillStyle = '#333';
+  chartCtx.font = '11px sans-serif';
+  chartCtx.textAlign = 'right';
+  chartCtx.textBaseline = 'middle';
+  [0, 50, 100].forEach(pct => {
+    const y = padding.top + plotHeight - (pct / 100) * plotHeight;
+    chartCtx.fillText(`${pct}%`, padding.left - 5, y);
+    // Grid line
+    chartCtx.strokeStyle = '#ddd';
+    chartCtx.beginPath();
+    chartCtx.moveTo(padding.left, y);
+    chartCtx.lineTo(padding.left + plotWidth, y);
+    chartCtx.stroke();
+  });
+  
+  // X-axis labels
+  chartCtx.textAlign = 'center';
+  chartCtx.textBaseline = 'top';
+  chartCtx.fillStyle = '#333';
+  [0, 25, 50, 75, 100].forEach(pct => {
+    const x = padding.left + (pct / 100) * plotWidth;
+    chartCtx.fillText(`${pct}%`, x, padding.top + plotHeight + 5);
+  });
+  chartCtx.fillText('Timeline Progress', padding.left + plotWidth / 2, padding.top + plotHeight + 22);
+  
+  // Y-axis label
+  chartCtx.save();
+  chartCtx.translate(12, padding.top + plotHeight / 2);
+  chartCtx.rotate(-Math.PI / 2);
+  chartCtx.textAlign = 'center';
+  chartCtx.fillText('% Discovered', 0, 0);
+  chartCtx.restore();
+  
+  // Draw lines for each community
+  largeCommunities.forEach(c => {
+    const points = dataPoints.get(c.id);
+    if (points.length < 2) return;
+    
+    chartCtx.strokeStyle = c.color;
+    chartCtx.lineWidth = 2;
+    chartCtx.beginPath();
+    points.forEach((pt, idx) => {
+      const x = padding.left + (pt.x / 100) * plotWidth;
+      const y = padding.top + plotHeight - (pt.y / 100) * plotHeight;
+      if (idx === 0) {
+        chartCtx.moveTo(x, y);
+      } else {
+        chartCtx.lineTo(x, y);
+      }
+    });
+    chartCtx.stroke();
+  });
+  
+  // Draw legend
+  const legendX = padding.left + 10;
+  let legendY = padding.top + 5;
+  chartCtx.font = '10px sans-serif';
+  chartCtx.textAlign = 'left';
+  chartCtx.textBaseline = 'middle';
+  largeCommunities.slice(0, 8).forEach(c => {
+    chartCtx.fillStyle = c.color;
+    chartCtx.fillRect(legendX, legendY - 4, 12, 8);
+    chartCtx.fillStyle = '#333';
+    chartCtx.fillText(`${c.id} (${c.count})`, legendX + 16, legendY);
+    legendY += 14;
+  });
 }
 
 function handleNodeClick(node) {
@@ -1469,6 +1629,9 @@ async function loadGraphData() {
     communityColors = assignCommunityColors(communityAssignments);
     communitySummaries.value = buildCommunitySummaries(communityAssignments, communityColors, allNodes);
     
+    // Draw community discovery chart
+    drawCommunityDiscoveryChart();
+    
     // Initial recipe path will be computed locally via findPathToNode during rebuild
     recipePathEdges = new Set();
     
@@ -1537,6 +1700,11 @@ watch(renderMode, () => {
   currentLabelHighlight.value = null;
 });
 
+// Redraw discovery chart when communities change
+watch(communitySummaries, () => {
+  drawCommunityDiscoveryChart();
+}, { deep: true });
+
 onBeforeUnmount(() => {
   simulation?.stop();
   cancelAnimationFrame(animationFrame);
@@ -1601,6 +1769,16 @@ onBeforeUnmount(() => {
           />
         </div>
       </div>
+    </div>
+
+    <div class="w-full max-w-4xl border border-gray-200 rounded-md p-3 bg-white shadow-sm">
+      <h3 class="text-sm font-semibold mb-2">Community Discovery Over Time</h3>
+      <canvas
+        ref="discoveryCanvas"
+        :width="600"
+        :height="300"
+        class="w-full"
+      />
     </div>
 
     <div class="w-full max-w-4xl border border-gray-200 rounded-md p-3 bg-white shadow-sm">
