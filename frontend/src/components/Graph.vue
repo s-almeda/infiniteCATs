@@ -36,6 +36,12 @@ const timePercentage = ref(100);
 const renderMode = ref('Combination Nodes');
 const currentLabelHighlight = ref(null);
 const selectedCommunities = ref(new Set());
+const colorMode = ref('communities'); // 'communities' or 'users'
+const selectedUsers = ref(new Set());
+let userAssignments = {}; // nodeId -> username (first discoverer)
+let userColors = {}; // nodeId -> color string
+let edgeUserMap = {}; // recipeKey -> Set of usernames who traversed this edge
+const userSummaries = ref([]);
 let expandedNodes = [];
 let expandedLinks = [];
 let originalLinks = []; // Raw chronological links from API
@@ -96,6 +102,18 @@ function drawLinkograph(nodes, links) {
     const tgt = link.target?.id ?? link.target;
     if (!src || !tgt) return null;
 
+    // Use user colors when in user mode and viewing global graph
+    if (colorMode.value === 'users' && !isLoggedIn.value) {
+      const srcUser = userAssignments[src];
+      const tgtUser = userAssignments[tgt];
+      if (srcUser !== undefined && tgtUser !== undefined && srcUser === tgtUser) {
+        return userColors[src];
+      }
+      if (srcUser !== undefined && tgtUser === undefined) return userColors[src];
+      if (tgtUser !== undefined && srcUser === undefined) return userColors[tgt];
+      return null;
+    }
+
     // allow combination/connector endpoints to inherit the material endpoint color
     const srcComm = communityAssignments[src];
     const tgtComm = communityAssignments[tgt];
@@ -125,14 +143,57 @@ function drawLinkograph(nodes, links) {
     }
   });
   
+  // Helper to determine if a link is selected (for highlighting)
+  const isLinkSelected = (link) => {
+    const src = link.source?.id ?? link.source;
+    const tgt = link.target?.id ?? link.target;
+    
+    if (colorMode.value === 'users' && !isLoggedIn.value) {
+      if (selectedUsers.value.size === 0) return null; // no selection active
+      
+      const srcUser = userAssignments[src];
+      const tgtUser = userAssignments[tgt];
+      const srcSelected = srcUser !== undefined && selectedUsers.value.has(srcUser);
+      const tgtSelected = tgtUser !== undefined && selectedUsers.value.has(tgtUser);
+      
+      // Also check edgeUserMap for this specific edge
+      const edgeKey = link.recipeKey;
+      let edgeHasSelectedUser = false;
+      if (edgeKey && edgeUserMap[edgeKey]) {
+        for (const u of selectedUsers.value) {
+          if (edgeUserMap[edgeKey].has(u)) {
+            edgeHasSelectedUser = true;
+            break;
+          }
+        }
+      }
+      
+      return srcSelected || tgtSelected || edgeHasSelectedUser;
+    } else {
+      if (selectedCommunities.value.size === 0) return null; // no selection active
+      
+      const srcComm = communityAssignments[src];
+      const tgtComm = communityAssignments[tgt];
+      const srcSelected = srcComm !== undefined && selectedCommunities.value.has(srcComm);
+      const tgtSelected = tgtComm !== undefined && selectedCommunities.value.has(tgtComm);
+      return srcSelected || tgtSelected;
+    }
+  };
+
   // Then, draw recipe edges above the line (use community color if both ends share one)
   links.forEach(link => {
     if (!link.isDuplicate) {
       const isRecipe = link.isRecipe;
-      const communityColor = isRecipe ? null : linkColorFor(link);
-      ctx.strokeStyle = communityColor || (isRecipe ? "#ff0000" : "#888");
-      ctx.lineWidth = isRecipe ? 2 : 1;
-      ctx.globalAlpha = isRecipe ? 0.7 : (communityColor ? 0.5 : 0.4);
+      const linkColor = isRecipe ? null : linkColorFor(link);
+      const selectionState = isLinkSelected(link);
+      const selectionActive = selectionState !== null;
+      const isSelected = selectionState === true;
+      
+      ctx.strokeStyle = linkColor || (isRecipe ? "#ff0000" : "#888");
+      ctx.lineWidth = isRecipe ? 2 : (isSelected ? 2 : 1);
+      ctx.globalAlpha = selectionActive 
+        ? (isSelected ? 0.8 : 0.08)
+        : (isRecipe ? 0.7 : (linkColor ? 0.5 : 0.4));
       
       ctx.beginPath();
       ctx.moveTo(link.source.x, link.source.y);
@@ -142,17 +203,40 @@ function drawLinkograph(nodes, links) {
   });
   ctx.globalAlpha = 1;
 
+  // Helper to get selection state based on colorMode
+  const getSelectionState = (nodeId) => {
+    if (colorMode.value === 'users' && !isLoggedIn.value) {
+      const userId = userAssignments[nodeId];
+      return {
+        selectionActive: selectedUsers.value.size > 0,
+        isSelected: userId !== undefined && selectedUsers.value.has(userId)
+      };
+    } else {
+      const commId = communityAssignments[nodeId];
+      return {
+        selectionActive: selectedCommunities.value.size > 0,
+        isSelected: commId !== undefined && selectedCommunities.value.has(commId)
+      };
+    }
+  };
+
   // Draw nodes
   nodes.forEach(node => {
-    const commId = communityAssignments[node.id];
-    const selectionActive = selectedCommunities.value.size > 0;
-    const isSelectedComm = selectionActive && commId !== undefined && selectedCommunities.value.has(commId);
+    const { selectionActive, isSelected } = getSelectionState(node.id);
     // Draw node circle
     ctx.beginPath();
-    const nodeColor = (!node.isConnector && communityColors[node.id]) ? communityColors[node.id] : (node.isConnector ? "#ff9500" : "#219ebc");
+    
+    // Choose color based on colorMode
+    let nodeColor;
+    if (colorMode.value === 'users' && !isLoggedIn.value) {
+      nodeColor = (!node.isConnector && userColors[node.id]) ? userColors[node.id] : (node.isConnector ? "#ff9500" : "#219ebc");
+    } else {
+      nodeColor = (!node.isConnector && communityColors[node.id]) ? communityColors[node.id] : (node.isConnector ? "#ff9500" : "#219ebc");
+    }
+    
     ctx.fillStyle = nodeColor;
-    ctx.globalAlpha = selectionActive ? (isSelectedComm ? 1 : 0.15) : 1;
-    const radius = node.isConnector ? 4 : (isSelectedComm ? 8 : 6);
+    ctx.globalAlpha = selectionActive ? (isSelected ? 1 : 0.15) : 1;
+    const radius = node.isConnector ? 4 : (isSelected ? 8 : 6);
     ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
     ctx.fill();
     ctx.globalAlpha = 1;
@@ -186,11 +270,23 @@ function draw(nodes, links) {
   ctx.scale(zoomLevel.value, zoomLevel.value);
   ctx.translate(-width.value / 2, -height.value / 2);
 
-  // Helper to pick a community color for a link; allow combo/connector nodes to inherit
+  // Helper to pick a color for a link based on colorMode
   const linkColorFor = (link) => {
     const src = link.source?.id ?? link.source;
     const tgt = link.target?.id ?? link.target;
     if (!src || !tgt) return null;
+
+    // Use user colors when in user mode and viewing global graph
+    if (colorMode.value === 'users' && !isLoggedIn.value) {
+      const srcUser = userAssignments[src];
+      const tgtUser = userAssignments[tgt];
+      if (srcUser !== undefined && tgtUser !== undefined && srcUser === tgtUser) {
+        return userColors[src];
+      }
+      if (srcUser !== undefined && tgtUser === undefined) return userColors[src];
+      if (tgtUser !== undefined && srcUser === undefined) return userColors[tgt];
+      return null;
+    }
 
     const srcComm = communityAssignments[src];
     const tgtComm = communityAssignments[tgt];
@@ -207,19 +303,52 @@ function draw(nodes, links) {
     return null;
   };
 
+  // Determine which selection system to use based on colorMode
+  const getSelectionState = (nodeId) => {
+    if (colorMode.value === 'users' && !isLoggedIn.value) {
+      const userId = userAssignments[nodeId];
+      return {
+        selectionActive: selectedUsers.value.size > 0,
+        isSelected: userId !== undefined && selectedUsers.value.has(userId)
+      };
+    } else {
+      const commId = communityAssignments[nodeId];
+      return {
+        selectionActive: selectedCommunities.value.size > 0,
+        isSelected: commId !== undefined && selectedCommunities.value.has(commId)
+      };
+    }
+  };
+
   // Draw links individually for dynamic styling
   links.forEach(l => {
     const isRecipe = l.isRecipe;
     const isLabelHi = renderMode.value === 'Labeled Arrows' && l.isLabelHighlight;
-    const communityColor = (!isRecipe && !isLabelHi) ? linkColorFor(l) : null;
-    const selectionActive = selectedCommunities.value.size > 0;
-    const srcComm = l.source?.id ? communityAssignments[l.source.id] : communityAssignments[l.source];
-    const tgtComm = l.target?.id ? communityAssignments[l.target.id] : communityAssignments[l.target];
-    const isSelectedLink = selectionActive && ((srcComm !== undefined && selectedCommunities.value.has(srcComm)) || (tgtComm !== undefined && selectedCommunities.value.has(tgtComm)));
+    const linkColor = (!isRecipe && !isLabelHi) ? linkColorFor(l) : null;
+    
+    const srcId = l.source?.id ?? l.source;
+    const tgtId = l.target?.id ?? l.target;
+    const srcState = getSelectionState(srcId);
+    const tgtState = getSelectionState(tgtId);
+    const selectionActive = srcState.selectionActive;
+    
+    // For user mode, check if any selected user traversed this edge
+    let isSelectedLink = srcState.isSelected || tgtState.isSelected;
+    if (colorMode.value === 'users' && !isLoggedIn.value && l.recipeKey && selectedUsers.value.size > 0) {
+      const edgeUsers = edgeUserMap[l.recipeKey];
+      if (edgeUsers) {
+        for (const user of selectedUsers.value) {
+          if (edgeUsers.has(user)) {
+            isSelectedLink = true;
+            break;
+          }
+        }
+      }
+    }
 
-    ctx.strokeStyle = isRecipe ? "#ff0000" : (isLabelHi ? "#1e90ff" : (communityColor || "#888"));
+    ctx.strokeStyle = isRecipe ? "#ff0000" : (isLabelHi ? "#1e90ff" : (linkColor || "#888"));
     ctx.lineWidth = (isRecipe || isLabelHi || isSelectedLink) ? 2.2 : 1;
-    ctx.globalAlpha = isRecipe ? 0.7 : (isLabelHi ? 0.6 : (selectionActive ? (isSelectedLink ? 0.85 : 0.12) : (communityColor ? 0.5 : 0.3)));
+    ctx.globalAlpha = isRecipe ? 0.7 : (isLabelHi ? 0.6 : (selectionActive ? (isSelectedLink ? 0.85 : 0.12) : (linkColor ? 0.5 : 0.3)));
     ctx.beginPath();
     ctx.moveTo(l.source.x, l.source.y);
     ctx.lineTo(l.target.x, l.target.y);
@@ -279,14 +408,20 @@ function draw(nodes, links) {
 
   // nodes
   nodes.forEach(n => {
-    const commId = communityAssignments[n.id];
-    const selectionActive = selectedCommunities.value.size > 0;
-    const isSelectedComm = selectionActive && commId !== undefined && selectedCommunities.value.has(commId);
+    const { selectionActive, isSelected } = getSelectionState(n.id);
     ctx.beginPath();
-    const color = (!n.isConnector && communityColors[n.id]) ? communityColors[n.id] : (n.type === "combination" ? "#ffb703" : "#219ebc");
+    
+    // Choose color based on colorMode
+    let color;
+    if (colorMode.value === 'users' && !isLoggedIn.value) {
+      color = (!n.isConnector && userColors[n.id]) ? userColors[n.id] : (n.type === "combination" ? "#ffb703" : "#219ebc");
+    } else {
+      color = (!n.isConnector && communityColors[n.id]) ? communityColors[n.id] : (n.type === "combination" ? "#ffb703" : "#219ebc");
+    }
+    
     ctx.fillStyle = color;
-    ctx.globalAlpha = selectionActive ? (isSelectedComm ? 1 : 0.18) : 1;
-    const radius = isSelectedComm ? 8 : 6;
+    ctx.globalAlpha = selectionActive ? (isSelected ? 1 : 0.18) : 1;
+    const radius = isSelected ? 8 : 6;
     ctx.arc(n.x, n.y, radius, 0, Math.PI * 2);
     ctx.fill();
     ctx.globalAlpha = 1;
@@ -446,6 +581,7 @@ function clearHighlights() {
   currentLabelHighlight.value = null;
   markLabelHighlightedEdges();
   selectedCommunities.value = new Set();
+  selectedUsers.value = new Set();
 
   if (expandedNodes.length > 0 && expandedLinks.length > 0) {
     draw(expandedNodes, expandedLinks);
@@ -573,6 +709,123 @@ function computeCommunities(nodes, links, params = COMMUNITY_PARAMS) {
   const assignment = {};
   nodeIds.forEach(id => { assignment[id] = community.get(id); });
   return assignment;
+}
+
+function computeUserAssignments(nodes, links) {
+  // Assign each node to the user who first discovered it (based on link order)
+  // Also build edgeUserMap: which users traversed each edge
+  // Skip duplicate/flipped recipes
+  const assignments = {};
+  const edgeUsers = {}; // recipeKey -> Set of usernames
+  const seenRecipes = new Set(); // Track normalized recipes to skip flips
+  
+  // Base materials have no user - assign to 'system'
+  ['Fire', 'Water', 'Earth', 'Air'].forEach(base => {
+    assignments[base] = 'system';
+  });
+  
+  // Helper to normalize recipe (canonical form: alphabetically sorted ingredients)
+  const normalizeRecipe = (from1, from2, to) => {
+    const ingredients = [from1, from2].sort().join('_');
+    return `${ingredients}_${to}`;
+  };
+  
+  // Process links in chronological order
+  links.forEach(link => {
+    const resultId = link.to;
+    const linkUser = link.username || 'unknown';
+    
+    // Get normalized recipe to detect flipped combinations
+    const normalizedRecipe = normalizeRecipe(link.from1, link.from2, link.to);
+    
+    // Skip if we've already seen this recipe (or its flip)
+    if (seenRecipes.has(normalizedRecipe)) {
+      return;
+    }
+    seenRecipes.add(normalizedRecipe);
+    
+    // First link to create this result determines the discoverer
+    if (resultId && !assignments[resultId]) {
+      assignments[resultId] = linkUser;
+    }
+    
+    // Track all users who traversed this edge (recipe)
+    const recipeKey = `${link.from1}_${link.from2}_${link.to}`;
+    if (!edgeUsers[recipeKey]) {
+      edgeUsers[recipeKey] = new Set();
+    }
+    edgeUsers[recipeKey].add(linkUser);
+  });
+  
+  // Store edgeUserMap globally
+  edgeUserMap = edgeUsers;
+  
+  return assignments;
+}
+
+function assignUserColors(assignments) {
+  // Palette avoids bright red/blue to keep recipe/label highlights readable
+  const palette = [
+    '#f4a261', // amber
+    '#6dccb5', // mint
+    '#a4c639', // olive-lime
+    '#8f5fe8', // violet
+    '#d17ba0', // rose
+    '#5ca9a5', // teal
+    '#c7b446', // ochre
+    '#6ab04c', // green
+    '#b86ee0', // purple
+    '#e6b980'  // sand
+  ];
+
+  const colors = {};
+  const userToColor = new Map();
+  let idx = 0;
+  Object.entries(assignments).forEach(([nodeId, userId]) => {
+    if (!userToColor.has(userId)) {
+      userToColor.set(userId, palette[idx % palette.length]);
+      idx++;
+    }
+    colors[nodeId] = userToColor.get(userId);
+  });
+  return colors;
+}
+
+function buildUserSummaries(assignments, colors, nodes) {
+  const group = new Map();
+  nodes.forEach(n => {
+    if (!n || n.type === "combination" || n.isConnector) return;
+    const userId = assignments[n.id];
+    if (userId === undefined) return;
+    if (!group.has(userId)) group.set(userId, { color: null, nodes: [] });
+    const entry = group.get(userId);
+    entry.color = entry.color || colors[n.id] || '#219ebc';
+    entry.nodes.push(n);
+  });
+
+  return [...group.entries()].map(([userId, { color, nodes }]) => {
+    const labels = nodes.slice(0, 5).map(n => n.label || n.id);
+    return {
+      id: userId,
+      color,
+      count: nodes.length,
+      labels
+    };
+  }).sort((a, b) => b.count - a.count);
+}
+
+function onUserToggle(userId, checked) {
+  const next = new Set(selectedUsers.value);
+  if (checked) {
+    next.add(userId);
+  } else {
+    next.delete(userId);
+  }
+  selectedUsers.value = next;
+
+  if (expandedNodes.length > 0 && expandedLinks.length > 0) {
+    draw(expandedNodes, expandedLinks);
+  }
 }
 
 function assignCommunityColors(assignments) {
@@ -1629,6 +1882,13 @@ async function loadGraphData() {
     communityColors = assignCommunityColors(communityAssignments);
     communitySummaries.value = buildCommunitySummaries(communityAssignments, communityColors, allNodes);
     
+    // Compute user assignments (for global graph coloring by user)
+    if (!isLoggedIn.value) {
+      userAssignments = computeUserAssignments(allNodes, originalLinks);
+      userColors = assignUserColors(userAssignments);
+      userSummaries.value = buildUserSummaries(userAssignments, userColors, allNodes);
+    }
+    
     // Draw community discovery chart
     drawCommunityDiscoveryChart();
     
@@ -1698,6 +1958,17 @@ watch(renderMode, () => {
   rebuildGraphForTimeline(true);
   // clear any label highlight when switching modes
   currentLabelHighlight.value = null;
+});
+
+// Redraw when colorMode changes
+watch(colorMode, () => {
+  console.log(`Color mode changed to ${colorMode.value}`);
+  // Clear selections when switching modes
+  selectedCommunities.value = new Set();
+  selectedUsers.value = new Set();
+  if (expandedNodes.length > 0 && expandedLinks.length > 0) {
+    draw(expandedNodes, expandedLinks);
+  }
 });
 
 // Redraw discovery chart when communities change
@@ -1771,7 +2042,23 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div class="w-full max-w-4xl border border-gray-200 rounded-md p-3 bg-white shadow-sm">
+    <!-- Color Mode Toggle (only shown for global graph) -->
+    <div v-if="!isLoggedIn" class="w-full max-w-4xl border border-gray-200 rounded-md p-3 bg-white shadow-sm">
+      <h3 class="text-sm font-semibold mb-2">Color By</h3>
+      <div class="flex items-center gap-4">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="radio" v-model="colorMode" value="communities" class="w-4 h-4" />
+          <span class="text-sm">Communities</span>
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="radio" v-model="colorMode" value="users" class="w-4 h-4" />
+          <span class="text-sm">Users</span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Communities List (shown when colorMode is communities or user is logged in) -->
+    <div v-if="colorMode === 'communities' || isLoggedIn" class="w-full max-w-4xl border border-gray-200 rounded-md p-3 bg-white shadow-sm">
       <h3 class="text-sm font-semibold mb-2">Communities</h3>
       <div class="flex flex-col gap-2">
         <div v-if="communitySummaries.length === 0" class="text-xs text-gray-500">Communities will appear after data loads.</div>
@@ -1790,6 +2077,30 @@ onBeforeUnmount(() => {
           <span class="font-medium">Community {{ comm.id }}</span>
           <span class="text-gray-500 text-xs">({{ comm.count }} nodes)</span>
           <span class="text-gray-700 text-xs">Examples: {{ comm.labels.join(', ') }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Users List (shown when colorMode is users and no user logged in) -->
+    <div v-if="colorMode === 'users' && !isLoggedIn" class="w-full max-w-4xl border border-gray-200 rounded-md p-3 bg-white shadow-sm">
+      <h3 class="text-sm font-semibold mb-2">Users</h3>
+      <div class="flex flex-col gap-2">
+        <div v-if="userSummaries.length === 0" class="text-xs text-gray-500">Users will appear after data loads.</div>
+        <div
+          v-for="user in userSummaries"
+          :key="user.id"
+          class="flex items-center gap-3 text-sm"
+        >
+          <input
+            type="checkbox"
+            class="w-4 h-4"
+            :checked="selectedUsers.has(user.id)"
+            @change="onUserToggle(user.id, $event.target.checked)"
+          />
+          <span class="inline-block w-4 h-4 rounded-sm border" :style="{ backgroundColor: user.color }"></span>
+          <span class="font-medium">{{ user.id }}</span>
+          <span class="text-gray-500 text-xs">({{ user.count }} nodes)</span>
+          <span class="text-gray-700 text-xs">Examples: {{ user.labels.join(', ') }}</span>
         </div>
       </div>
     </div>

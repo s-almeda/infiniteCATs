@@ -412,11 +412,11 @@ def get_nodes_and_edges(username: str | None = None):
     cursor = conn.cursor()
     if username:
         cursor.execute(
-            'SELECT id, firstWord, secondWord, resultName, resultEmoji, perUserRank FROM combinations WHERE username = ? ORDER BY id',
+            'SELECT id, firstWord, secondWord, resultName, resultEmoji, perUserRank, username FROM combinations WHERE username = ? ORDER BY id',
             (username,)
         )
     else:
-        cursor.execute('SELECT id, firstWord, secondWord, resultName, resultEmoji, perUserRank FROM combinations ORDER BY id')
+        cursor.execute('SELECT id, firstWord, secondWord, resultName, resultEmoji, perUserRank, username FROM combinations ORDER BY id')
     rows = cursor.fetchall()
     conn.close()
     
@@ -487,7 +487,8 @@ def get_nodes_and_edges(username: str | None = None):
             'to': result_name,
             'distanceFrom1': distancefrom1,
             'distanceFrom2': distancefrom2,
-            'distanceTo': distanceto
+            'distanceTo': distanceto,
+            'username': row['username']
         })
     
     print(f"Fetched {len(nodes)} nodes and {len(edges)} edges for {scope}.")
