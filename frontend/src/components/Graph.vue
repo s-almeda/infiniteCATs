@@ -56,6 +56,7 @@ let panStartY = 0;
 let communityAssignments = {}; // nodeId -> communityId
 let communityColors = {}; // nodeId -> color string
 const communitySummaries = ref([]);
+const globalCentralization = ref(0);
 const COMMUNITY_PARAMS = {
   gamma: 0.5,      // < 1 => coarser communities; > 1 => finer communities
   maxPasses: 50,   // number of local-move sweeps
@@ -856,7 +857,7 @@ function assignCommunityColors(assignments) {
   return colors;
 }
 
-function buildCommunitySummaries(assignments, colors, nodes) {
+function buildCommunitySummaries(assignments, colors, nodes, links) {
   const group = new Map();
   nodes.forEach(n => {
     if (!n || n.type === "combination" || n.isConnector) return;
@@ -868,15 +869,86 @@ function buildCommunitySummaries(assignments, colors, nodes) {
     entry.nodes.push(n);
   });
 
-  return [...group.entries()].map(([commId, { color, nodes }]) => {
-    const labels = nodes.slice(0, 5).map(n => n.label || n.id);
+  return [...group.entries()].map(([commId, { color, nodes: commNodes }]) => {
+    const labels = commNodes.slice(0, 5).map(n => n.label || n.id);
+    
+    // Compute Freeman Degree Centralization for this community
+    const centralization = computeFreemanCentralization(commNodes, links, assignments, commId);
+    
     return {
       id: commId,
       color,
-      count: nodes.length,
-      labels
+      count: commNodes.length,
+      labels,
+      centralization
     };
   }).sort((a, b) => b.count - a.count);
+}
+
+function computeFreemanCentralization(communityNodes, links, assignments, commId) {
+  // Freeman Degree Centralization: C_D = sum(d_max - d_i) / [(n-1)(n-2)]
+  // For undirected graph within the community
+  
+  const n = communityNodes.length;
+  if (n <= 2) return 0; // Centralization undefined for n <= 2
+  
+  // Build set of node IDs in this community
+  const nodeSet = new Set(communityNodes.map(node => node.id));
+  
+  // First, collect unique edges within the community (deduplicate)
+  // Use a Set with canonical edge keys (sorted node IDs)
+  const edgeSet = new Set();
+  
+  const addEdge = (a, b) => {
+    if (!nodeSet.has(a) || !nodeSet.has(b)) return;
+    if (a === b) return; // skip self-loops
+    // Canonical form: alphabetically sorted
+    const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+    edgeSet.add(key);
+  };
+  
+  links.forEach(link => {
+    // Handle combination link format: from1 + from2 -> to
+    if (link.from1 && link.from2 && link.to) {
+      addEdge(link.from1, link.to);
+      addEdge(link.from2, link.to);
+    } else {
+      // Standard source-target format
+      const src = link.source?.id ?? link.source;
+      const tgt = link.target?.id ?? link.target ?? link.to;
+      if (src && tgt) {
+        addEdge(src, tgt);
+      }
+    }
+  });
+  
+  // Now compute degrees from the deduplicated edge set
+  const degrees = new Map();
+  nodeSet.forEach(id => degrees.set(id, 0));
+  
+  edgeSet.forEach(edgeKey => {
+    const [a, b] = edgeKey.split('|');
+    degrees.set(a, degrees.get(a) + 1);
+    degrees.set(b, degrees.get(b) + 1);
+  });
+  
+  // Find max degree and sum of differences
+  let maxDegree = 0;
+  degrees.forEach(d => {
+    if (d > maxDegree) maxDegree = d;
+  });
+  
+  let sumDiff = 0;
+  degrees.forEach(d => {
+    sumDiff += (maxDegree - d);
+  });
+  
+  // Freeman centralization formula
+  // Maximum possible sum for a star graph is (n-1)(n-2)
+  const maxPossible = (n - 1) * (n - 2);
+  if (maxPossible === 0) return 0;
+  
+  return sumDiff / maxPossible;
 }
 
 function drawCommunityDiscoveryChart() {
@@ -1880,7 +1952,11 @@ async function loadGraphData() {
     // Compute communities and assign colors (Louvain-style heuristic)
     communityAssignments = computeCommunities(allNodes, originalLinks, COMMUNITY_PARAMS);
     communityColors = assignCommunityColors(communityAssignments);
-    communitySummaries.value = buildCommunitySummaries(communityAssignments, communityColors, allNodes);
+    communitySummaries.value = buildCommunitySummaries(communityAssignments, communityColors, allNodes, originalLinks);
+    
+    // Compute global graph centralization
+    const materialNodes = allNodes.filter(n => n && n.type !== "combination" && !n.isConnector);
+    globalCentralization.value = computeFreemanCentralization(materialNodes, originalLinks, {}, null);
     
     // Compute user assignments (for global graph coloring by user)
     if (!isLoggedIn.value) {
@@ -2059,7 +2135,10 @@ onBeforeUnmount(() => {
 
     <!-- Communities List (shown when colorMode is communities or user is logged in) -->
     <div v-if="colorMode === 'communities' || isLoggedIn" class="w-full max-w-4xl border border-gray-200 rounded-md p-3 bg-white shadow-sm">
-      <h3 class="text-sm font-semibold mb-2">Communities</h3>
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-sm font-semibold">Communities</h3>
+        <span class="text-xs text-blue-600" title="Freeman Degree Centralization for the entire graph">Global Centralization: {{ globalCentralization.toFixed(3) }}</span>
+      </div>
       <div class="flex flex-col gap-2">
         <div v-if="communitySummaries.length === 0" class="text-xs text-gray-500">Communities will appear after data loads.</div>
         <div
@@ -2076,6 +2155,7 @@ onBeforeUnmount(() => {
           <span class="inline-block w-4 h-4 rounded-sm border" :style="{ backgroundColor: comm.color }"></span>
           <span class="font-medium">Community {{ comm.id }}</span>
           <span class="text-gray-500 text-xs">({{ comm.count }} nodes)</span>
+          <span class="text-blue-600 text-xs" :title="'Freeman Degree Centralization: measures how centralized the community structure is (0=decentralized, 1=star-shaped)'">Centralization: {{ comm.centralization.toFixed(3) }}</span>
           <span class="text-gray-700 text-xs">Examples: {{ comm.labels.join(', ') }}</span>
         </div>
       </div>
