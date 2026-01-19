@@ -57,6 +57,7 @@ let communityAssignments = {}; // nodeId -> communityId
 let communityColors = {}; // nodeId -> color string
 const communitySummaries = ref([]);
 const globalCentralization = ref(0);
+const globalInterCommunityDistance = ref(0);
 const COMMUNITY_PARAMS = {
   gamma: 0.5,      // < 1 => coarser communities; > 1 => finer communities
   maxPasses: 50,   // number of local-move sweeps
@@ -949,6 +950,43 @@ function computeFreemanCentralization(communityNodes, links, assignments, commId
   if (maxPossible === 0) return 0;
   
   return sumDiff / maxPossible;
+}
+
+async function fetchCommunityEmbeddingStats(assignments) {
+  // Fetch embedding statistics (avg distance, std) for each community from the backend
+  try {
+    const apiUrl = import.meta.env.VITE_FLASK_API_URL || 'http://localhost:3000';
+    const res = await fetch(`${apiUrl}/api/community-embedding-stats`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ communities: assignments })
+    });
+    
+    if (!res.ok) {
+      console.error("Failed to fetch community embedding stats:", res.status);
+      return;
+    }
+    
+    const { stats, avgInterCommunityDistance } = await res.json();
+    
+    // Update communitySummaries with embedding stats
+    communitySummaries.value = communitySummaries.value.map(comm => {
+      const commStats = stats[String(comm.id)];
+      return {
+        ...comm,
+        avgDistToCentroid: commStats?.avgDistToCentroid ?? 0,
+        stdDistToCentroid: commStats?.stdDistToCentroid ?? 0,
+        maxDistToCentroid: commStats?.maxDistToCentroid ?? 0
+      };
+    });
+    
+    // Store inter-community distance for context
+    globalInterCommunityDistance.value = avgInterCommunityDistance ?? 0;
+    
+    console.log("Community embedding stats loaded:", stats, "Inter-community dist:", avgInterCommunityDistance);
+  } catch (err) {
+    console.error("Error fetching community embedding stats:", err);
+  }
 }
 
 function drawCommunityDiscoveryChart() {
@@ -1958,6 +1996,9 @@ async function loadGraphData() {
     const materialNodes = allNodes.filter(n => n && n.type !== "combination" && !n.isConnector);
     globalCentralization.value = computeFreemanCentralization(materialNodes, originalLinks, {}, null);
     
+    // Fetch embedding statistics for communities
+    await fetchCommunityEmbeddingStats(communityAssignments);
+    
     // Compute user assignments (for global graph coloring by user)
     if (!isLoggedIn.value) {
       userAssignments = computeUserAssignments(allNodes, originalLinks);
@@ -2137,14 +2178,15 @@ onBeforeUnmount(() => {
     <div v-if="colorMode === 'communities' || isLoggedIn" class="w-full max-w-4xl border border-gray-200 rounded-md p-3 bg-white shadow-sm">
       <div class="flex items-center justify-between mb-2">
         <h3 class="text-sm font-semibold">Communities</h3>
-        <span class="text-xs text-blue-600" title="Freeman Degree Centralization for the entire graph">Global Centralization: {{ globalCentralization.toFixed(3) }}</span>
+        <span class="text-xs text-blue-600" title="Freeman Degree Centralization for the entire graph">Global Centr: {{ globalCentralization.toFixed(3) }}</span>
+        <span class="text-xs text-teal-600" title="Average Euclidean distance between community centroids (how separated communities are in semantic space)">Inter-Comm Dist: {{ globalInterCommunityDistance.toFixed(3) }}</span>
       </div>
       <div class="flex flex-col gap-2">
         <div v-if="communitySummaries.length === 0" class="text-xs text-gray-500">Communities will appear after data loads.</div>
         <div
           v-for="comm in communitySummaries"
           :key="comm.id"
-          class="flex items-center gap-3 text-sm"
+          class="flex items-center gap-3 text-sm flex-wrap"
         >
           <input
             type="checkbox"
@@ -2155,7 +2197,10 @@ onBeforeUnmount(() => {
           <span class="inline-block w-4 h-4 rounded-sm border" :style="{ backgroundColor: comm.color }"></span>
           <span class="font-medium">Community {{ comm.id }}</span>
           <span class="text-gray-500 text-xs">({{ comm.count }} nodes)</span>
-          <span class="text-blue-600 text-xs" :title="'Freeman Degree Centralization: measures how centralized the community structure is (0=decentralized, 1=star-shaped)'">Centralization: {{ comm.centralization.toFixed(3) }}</span>
+          <span class="text-blue-600 text-xs" :title="'Freeman Degree Centralization: measures how centralized the community structure is (0=decentralized, 1=star-shaped)'">Centr: {{ comm.centralization.toFixed(3) }}</span>
+          <span class="text-purple-600 text-xs" :title="'Average Euclidean distance from each node to the community centroid (semantic spread)'">Spread: {{ (comm.avgDistToCentroid ?? 0).toFixed(3) }}</span>
+          <span class="text-orange-600 text-xs" :title="'Standard deviation of distances to centroid (uniformity of spread)'">±{{ (comm.stdDistToCentroid ?? 0).toFixed(3) }}</span>
+          <span class="text-green-600 text-xs" :title="'Maximum distance to centroid (community radius)'">Radius: {{ (comm.maxDistToCentroid ?? 0).toFixed(3) }}</span>
           <span class="text-gray-700 text-xs">Examples: {{ comm.labels.join(', ') }}</span>
         </div>
       </div>
