@@ -1,10 +1,11 @@
 <script setup>
-import { onMounted, onBeforeUnmount, ref, watch, computed } from "vue";
+import { onMounted, onBeforeUnmount, ref, watch, computed, nextTick } from "vue";
 import {
   forceSimulation,
   forceLink,
   forceManyBody,
-  forceCenter
+  forceCenter,
+  forceCollide
 } from "d3-force";
 import { useBoxesStore } from "@/stores/useBoxesStore";
 import { useResourcesStore } from "@/stores/useResourcesStore";
@@ -37,6 +38,12 @@ const renderMode = ref('Combination Nodes');
 const currentLabelHighlight = ref(null);
 const selectedCommunities = ref(new Set());
 const colorMode = ref('communities'); // 'communities' or 'users'
+const sbmMode = ref(false); // Toggle for hierarchical SBM view
+const sbmData = ref(null); // Hierarchical SBM tree data
+const sbmLoading = ref(false);
+const sbmExpandedNodes = ref(new Set(['root'])); // Which tree nodes are expanded
+const sbmLevel = ref(0); // Current level for SBM graph display (0 = leaf nodes, max = root)
+const sbmCanvas = ref(null); // Canvas ref for SBM graph
 const selectedUsers = ref(new Set());
 let userAssignments = {}; // nodeId -> username (first discoverer)
 let userColors = {}; // nodeId -> color string
@@ -44,6 +51,7 @@ let edgeUserMap = {}; // recipeKey -> Set of usernames who traversed this edge
 const userSummaries = ref([]);
 let expandedNodes = [];
 let expandedLinks = [];
+let sbmSimulation = null; // Separate simulation for SBM graph
 let originalLinks = []; // Raw chronological links from API
 let allNodes = []; // All nodes from API
 let recipePathEdges = new Set();
@@ -65,6 +73,53 @@ const avgCommunitySpread = computed(() => {
   if (spreads.length === 0) return 0;
   return spreads.reduce((a, b) => a + b, 0) / spreads.length;
 });
+
+// Flattened SBM tree for rendering
+const flattenedSbmTree = computed(() => {
+  if (!sbmData.value?.tree) return [];
+  
+  console.log('Computing flattenedSbmTree, tree:', JSON.stringify(sbmData.value.tree, null, 2).slice(0, 1000));
+  console.log('Expanded nodes:', [...sbmExpandedNodes.value]);
+  
+  const result = [];
+  const flatten = (node, depth, path) => {
+    const hasChildren = node.children && node.children.length > 0;
+    const isExpanded = sbmExpandedNodes.value.has(node.id);
+    
+    console.log(`Node ${node.id}: hasChildren=${hasChildren}, isExpanded=${isExpanded}, children count=${node.children?.length || 0}`);
+    
+    // Determine display label
+    let displayLabel = node.id;
+    if (node.id === 'root') {
+      displayLabel = 'All Nodes';
+    } else if (node.label) {
+      displayLabel = node.label;
+    }
+    
+    result.push({
+      id: node.id,
+      path: path,
+      depth: depth,
+      type: node.type,
+      displayLabel: displayLabel,
+      count: node.count,
+      hasChildren: hasChildren,
+      isExpanded: isExpanded
+    });
+    
+    // Recursively add children if expanded
+    if (hasChildren && isExpanded) {
+      node.children.forEach((child, idx) => {
+        flatten(child, depth + 1, `${path}/${idx}`);
+      });
+    }
+  };
+  
+  flatten(sbmData.value.tree, 0, 'root');
+  console.log('Flattened result:', result.length, 'items');
+  return result;
+});
+
 const COMMUNITY_PARAMS = {
   gamma: 0.5,      // < 1 => coarser communities; > 1 => finer communities
   maxPasses: 50,   // number of local-move sweeps
@@ -999,6 +1054,334 @@ async function fetchCommunityEmbeddingStats(assignments) {
     console.log("Community embedding stats loaded:", stats, "Inter-community dist:", avgInterCommunityDistance);
   } catch (err) {
     console.error("Error fetching community embedding stats:", err);
+  }
+}
+
+async function fetchSBMData() {
+  // Fetch hierarchical SBM data from backend
+  sbmLoading.value = true;
+  try {
+    const apiUrl = import.meta.env.VITE_FLASK_API_URL || 'http://localhost:3000';
+    let query = isLoggedIn.value && username.value
+      ? `?username=${encodeURIComponent(username.value)}`
+      : '';
+    
+    const res = await fetch(`${apiUrl}/api/hierarchical-sbm${query}`);
+    
+    if (!res.ok) {
+      console.error("Failed to fetch SBM data:", res.status);
+      return;
+    }
+    
+    sbmData.value = await res.json();
+    console.log("SBM data loaded:", sbmData.value);
+    
+    // Expand root by default
+    sbmExpandedNodes.value = new Set(['root']);
+  } catch (err) {
+    console.error("Error fetching SBM data:", err);
+  } finally {
+    sbmLoading.value = false;
+  }
+}
+
+function toggleSbmNode(nodeId) {
+  console.log('toggleSbmNode called with:', nodeId);
+  const expanded = new Set(sbmExpandedNodes.value);
+  if (expanded.has(nodeId)) {
+    expanded.delete(nodeId);
+  } else {
+    expanded.add(nodeId);
+  }
+  console.log('Expanded nodes now:', [...expanded]);
+  sbmExpandedNodes.value = expanded; // Trigger reactivity
+}
+
+// Computed: max hierarchy level from SBM data
+const sbmMaxLevel = computed(() => {
+  if (!sbmData.value) return 0;
+  return Math.max(0, sbmData.value.levels - 1);
+});
+
+// Get nodes at a specific hierarchy level from the SBM tree
+function getNodesAtLevel(targetLevel) {
+  if (!sbmData.value?.tree) return [];
+  
+  const nodes = [];
+  
+  // For level 0, we need leaf nodes (materials/combinations)
+  // For higher levels, we need the cluster nodes at that level
+  
+  function traverse(node, currentDepth) {
+    // At level 0, collect all leaf nodes (materials and combinations)
+    if (targetLevel === 0) {
+      if (node.type === 'material' || node.type === 'combination') {
+        nodes.push({
+          id: node.id,
+          type: node.type,
+          label: node.label || node.id,
+          count: 1
+        });
+      } else if (node.children) {
+        node.children.forEach(child => traverse(child, currentDepth + 1));
+      }
+    } else {
+      // For higher levels, collect cluster nodes at that level
+      if (node.level !== undefined && node.level === targetLevel - 1) {
+        nodes.push({
+          id: node.id,
+          type: 'cluster',
+          label: node.label || node.id,
+          count: node.count || 1,
+          level: node.level
+        });
+      } else if (node.children) {
+        node.children.forEach(child => traverse(child, currentDepth + 1));
+      }
+    }
+  }
+  
+  traverse(sbmData.value.tree, 0);
+  return nodes;
+}
+
+// Build edges between nodes based on the original bipartite connections
+function buildSBMEdges(levelNodes) {
+  if (!sbmData.value?.nodes) return [];
+  
+  // Create a map of original node ID to its hierarchy
+  const nodeHierarchyMap = new Map();
+  sbmData.value.nodes.forEach(n => {
+    nodeHierarchyMap.set(n.id, n.hierarchy || []);
+  });
+  
+  // Create a map of levelNode IDs for quick lookup
+  const levelNodeSet = new Set(levelNodes.map(n => n.id));
+  
+  // For level 0, use original bipartite edges
+  if (levelNodes.length > 0 && (levelNodes[0].type === 'material' || levelNodes[0].type === 'combination')) {
+    const edges = [];
+    const edgeSet = new Set();
+    
+    // Each combination connects to its 3 materials
+    sbmData.value.nodes.forEach(n => {
+      if (n.type === 'combination' && n.label) {
+        // Parse label like "Fire+Water→Steam"
+        const match = n.label.match(/(.+)\+(.+)→(.+)/);
+        if (match) {
+          const [, mat1, mat2, result] = match;
+          // Add edges: combo <-> mat1, combo <-> mat2, combo <-> result
+          [[n.id, mat1], [n.id, mat2], [n.id, result]].forEach(([a, b]) => {
+            if (levelNodeSet.has(a) && levelNodeSet.has(b)) {
+              const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+              if (!edgeSet.has(key)) {
+                edgeSet.add(key);
+                edges.push({ source: a, target: b, weight: 1 });
+              }
+            }
+          });
+        }
+      }
+    });
+    return edges;
+  }
+  
+  // For higher levels, aggregate edges between clusters
+  const targetLevel = levelNodes[0]?.level;
+  if (targetLevel === undefined) return [];
+  
+  // Map each original node to its cluster at this level
+  const nodeToCluster = new Map();
+  sbmData.value.nodes.forEach(n => {
+    const hierarchy = n.hierarchy || [];
+    if (hierarchy.length > targetLevel) {
+      const clusterId = `L${targetLevel}_${hierarchy[targetLevel]}`;
+      nodeToCluster.set(n.id, clusterId);
+    }
+  });
+  
+  // Count edges between clusters
+  const edgeWeights = new Map();
+  
+  sbmData.value.nodes.forEach(n => {
+    if (n.type === 'combination' && n.label) {
+      const match = n.label.match(/(.+)\+(.+)→(.+)/);
+      if (match) {
+        const [, mat1, mat2, result] = match;
+        const clusterCombo = nodeToCluster.get(n.id);
+        const cluster1 = nodeToCluster.get(mat1);
+        const cluster2 = nodeToCluster.get(mat2);
+        const clusterResult = nodeToCluster.get(result);
+        
+        // Count edges between different clusters
+        const countEdge = (ca, cb) => {
+          if (!ca || !cb || ca === cb) return;
+          if (!levelNodeSet.has(ca) || !levelNodeSet.has(cb)) return;
+          const key = ca < cb ? `${ca}|${cb}` : `${cb}|${ca}`;
+          edgeWeights.set(key, (edgeWeights.get(key) || 0) + 1);
+        };
+        
+        countEdge(clusterCombo, cluster1);
+        countEdge(clusterCombo, cluster2);
+        countEdge(clusterCombo, clusterResult);
+        countEdge(cluster1, cluster2);
+        countEdge(cluster1, clusterResult);
+        countEdge(cluster2, clusterResult);
+      }
+    }
+  });
+  
+  // Convert to edge array
+  const edges = [];
+  edgeWeights.forEach((weight, key) => {
+    const [source, target] = key.split('|');
+    edges.push({ source, target, weight });
+  });
+  
+  return edges;
+}
+
+// Build and draw the SBM graph at the current level
+function buildSBMGraph() {
+  if (!sbmData.value || !sbmCanvas.value) return;
+  
+  const levelNodes = getNodesAtLevel(sbmLevel.value);
+  const edges = buildSBMEdges(levelNodes);
+  
+  console.log(`Building SBM graph at level ${sbmLevel.value}: ${levelNodes.length} nodes, ${edges.length} edges`);
+  
+  // Assign colors based on type
+  const colorScale = [
+    '#e63946', '#f4a261', '#2a9d8f', '#264653', '#e9c46a',
+    '#9b5de5', '#00bbf9', '#00f5d4', '#fee440', '#f15bb5'
+  ];
+  
+  // Create positioned nodes
+  const canvasWidth = sbmCanvas.value.width;
+  const canvasHeight = sbmCanvas.value.height;
+  
+  const graphNodes = levelNodes.map((n, i) => ({
+    ...n,
+    x: Math.random() * canvasWidth * 0.8 + canvasWidth * 0.1,
+    y: Math.random() * canvasHeight * 0.8 + canvasHeight * 0.1,
+    color: n.type === 'material' ? '#3b82f6' : 
+           n.type === 'combination' ? '#f97316' : 
+           colorScale[i % colorScale.length],
+    radius: n.type === 'cluster' ? Math.max(8, Math.sqrt(n.count) * 3) : 
+            n.type === 'material' ? 6 : 4
+  }));
+  
+  // Create node map for edge lookup
+  const nodeMap = new Map(graphNodes.map(n => [n.id, n]));
+  
+  // Create graph edges with node references
+  const graphEdges = edges
+    .map(e => ({
+      source: nodeMap.get(e.source),
+      target: nodeMap.get(e.target),
+      weight: e.weight
+    }))
+    .filter(e => e.source && e.target);
+  
+  // Stop existing simulation
+  if (sbmSimulation) {
+    sbmSimulation.stop();
+  }
+  
+  // Find max weight for scaling
+  const maxWeight = Math.max(1, ...graphEdges.map(e => e.weight));
+  
+  // Create force simulation
+  sbmSimulation = forceSimulation(graphNodes)
+    .force("link",
+      forceLink(graphEdges)
+        .id(d => d.id)
+        .distance(e => {
+          const normalized = e.weight / maxWeight;
+          return 100 - normalized * 60; // Range: 40-100
+        })
+        .strength(e => {
+          const normalized = e.weight / maxWeight;
+          return 0.2 + normalized * 0.5;
+        })
+    )
+    .force("charge", forceManyBody().strength(levelNodes.length > 100 ? -30 : -100))
+    .force("center", forceCenter(canvasWidth / 2, canvasHeight / 2))
+    .force("collision", forceCollide().radius(d => d.radius + 2));
+  
+  sbmSimulation.on("tick", () => {
+    drawSBMGraph(graphNodes, graphEdges);
+  });
+}
+
+// Draw the SBM graph
+function drawSBMGraph(nodes, edges) {
+  if (!sbmCanvas.value) return;
+  
+  const ctx = sbmCanvas.value.getContext('2d');
+  const w = sbmCanvas.value.width;
+  const h = sbmCanvas.value.height;
+  
+  ctx.clearRect(0, 0, w, h);
+  
+  // Draw edges
+  const maxWeight = Math.max(1, ...edges.map(e => e.weight));
+  
+  edges.forEach(e => {
+    if (!e.source || !e.target) return;
+    
+    const normalized = e.weight / maxWeight;
+    ctx.beginPath();
+    ctx.moveTo(e.source.x, e.source.y);
+    ctx.lineTo(e.target.x, e.target.y);
+    ctx.strokeStyle = `rgba(150, 150, 150, ${0.2 + normalized * 0.6})`;
+    ctx.lineWidth = 0.5 + normalized * 2;
+    ctx.stroke();
+  });
+  
+  // Draw nodes
+  nodes.forEach(n => {
+    ctx.beginPath();
+    
+    if (n.type === 'material') {
+      // Circle for materials
+      ctx.arc(n.x, n.y, n.radius, 0, Math.PI * 2);
+    } else if (n.type === 'combination') {
+      // Diamond for combinations
+      ctx.moveTo(n.x, n.y - n.radius);
+      ctx.lineTo(n.x + n.radius, n.y);
+      ctx.lineTo(n.x, n.y + n.radius);
+      ctx.lineTo(n.x - n.radius, n.y);
+      ctx.closePath();
+    } else {
+      // Larger circle for clusters
+      ctx.arc(n.x, n.y, n.radius, 0, Math.PI * 2);
+    }
+    
+    ctx.fillStyle = n.color;
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  });
+  
+  // Draw labels for clusters (larger nodes)
+  if (sbmLevel.value > 0) {
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#333';
+    
+    nodes.forEach(n => {
+      if (n.type === 'cluster' && n.count > 5) {
+        // Truncate label if too long
+        let label = n.label || '';
+        if (label.length > 15) {
+          label = label.substring(0, 12) + '...';
+        }
+        ctx.fillText(label, n.x, n.y + n.radius + 10);
+      }
+    });
   }
 }
 
@@ -1972,6 +2355,30 @@ function rebuildGraphForTimeline(fullReset = false) {
     return;
   }
   
+  // Handle SBM Tree mode separately - just show placeholder on canvas
+  if (renderMode.value === 'SBM Tree') {
+    // Clear simulation
+    if (simulation) {
+      simulation.stop();
+      simulation = null;
+    }
+    storedNodes.value = [];
+    expandedLinks = [];
+    // Draw placeholder message
+    const canvasEl = canvas.value;
+    if (canvasEl) {
+      const ctx = canvasEl.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+        ctx.fillStyle = '#666';
+        ctx.font = '16px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('SBM Tree view is shown below', canvasEl.width / 2, canvasEl.height / 2);
+      }
+    }
+    return;
+  }
+  
   // Step 1: Build what SHOULD exist depending on render mode
   const shouldExistMaterials = new Set(['Fire', 'Water', 'Earth', 'Air']);
   const shouldExistCombos = new Set(); // recipe keys (used as edge identity)
@@ -2261,6 +2668,10 @@ watch(renderMode, () => {
   rebuildGraphForTimeline(true);
   // clear any label highlight when switching modes
   currentLabelHighlight.value = null;
+  // Fetch SBM data when switching to SBM Tree mode
+  if (renderMode.value === 'SBM Tree') {
+    fetchSBMData();
+  }
 });
 
 // Redraw when colorMode changes
@@ -2279,8 +2690,25 @@ watch(communitySummaries, () => {
   drawCommunityDiscoveryChart();
 }, { deep: true });
 
+// Rebuild SBM graph when level changes
+watch(sbmLevel, () => {
+  if (sbmData.value && renderMode.value === 'SBM Tree') {
+    buildSBMGraph();
+  }
+});
+
+// Rebuild SBM graph when data loads
+watch(sbmData, () => {
+  if (sbmData.value && renderMode.value === 'SBM Tree') {
+    // Reset level to 0 and build graph
+    sbmLevel.value = 0;
+    nextTick(() => buildSBMGraph());
+  }
+});
+
 onBeforeUnmount(() => {
   simulation?.stop();
+  sbmSimulation?.stop();
   cancelAnimationFrame(animationFrame);
 });
 </script>
@@ -2321,6 +2749,7 @@ onBeforeUnmount(() => {
             <option value="Linkograph">Linkograph</option>
             <option value="Path Linkography">Path Linkography</option>
             <option value="Community">Community Graph</option>
+            <option value="SBM Tree">Hierarchical SBM Tree</option>
           </select>
         </div>
         <div class="flex items-center gap-3 mb-3">
@@ -2426,6 +2855,91 @@ onBeforeUnmount(() => {
         :height="300"
         class="w-full"
       />
+    </div>
+
+    <!-- Hierarchical SBM Tree View (shown when SBM Tree render mode is selected) -->
+    <div v-if="renderMode === 'SBM Tree'" class="w-full max-w-4xl border border-gray-200 rounded-md p-3 bg-white shadow-sm">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-sm font-semibold">Hierarchical SBM (Bipartite Graph)</h3>
+        <button 
+          @click="fetchSBMData" 
+          class="bg-blue-500 text-white px-3 py-1 rounded text-xs hover:bg-blue-600"
+          :disabled="sbmLoading"
+        >
+          {{ sbmLoading ? 'Loading...' : 'Refresh SBM' }}
+        </button>
+      </div>
+      <div v-if="!sbmData" class="text-xs text-gray-500 py-4">
+        Click "Refresh SBM" to compute hierarchical communities on the bipartite material-combination graph.
+      </div>
+      <template v-else>
+        <div class="text-xs text-gray-600 mb-2">
+          {{ sbmData.levels }} hierarchy levels | {{ sbmData.nodes?.length || 0 }} nodes (materials + combinations)
+        </div>
+        
+        <!-- Level Slider and Graph -->
+        <div class="mb-4">
+          <div class="flex items-center gap-2 mb-2">
+            <label class="text-xs font-medium text-gray-700">Hierarchy Level:</label>
+            <input 
+              type="range" 
+              v-model.number="sbmLevel" 
+              :min="0" 
+              :max="sbmMaxLevel" 
+              class="flex-1"
+            />
+            <span class="text-xs text-gray-600 w-24">
+              {{ sbmLevel === 0 ? 'Leaf nodes' : `Level ${sbmLevel}` }}
+            </span>
+          </div>
+          <div class="text-xs text-gray-500 mb-2">
+            Level 0 = individual materials (●) and combinations (◆) | Higher levels = aggregated clusters
+          </div>
+          <canvas 
+            ref="sbmCanvas" 
+            :width="700" 
+            :height="400" 
+            class="w-full border rounded bg-gray-50"
+          />
+        </div>
+        
+        <!-- Collapsible Tree View -->
+        <details class="mt-2">
+          <summary class="cursor-pointer text-sm font-medium text-gray-700 hover:text-gray-900">
+            📁 Tree View (click to expand)
+          </summary>
+          <div v-if="sbmData?.tree" class="sbm-tree max-h-[400px] overflow-y-auto text-sm border rounded p-2 bg-gray-50 mt-2">
+            <template v-for="item in flattenedSbmTree" :key="item.path">
+              <div 
+                class="flex items-center gap-1 py-0.5 hover:bg-gray-100 rounded cursor-pointer"
+                :style="{ paddingLeft: `${item.depth * 16}px` }"
+                @click="toggleSbmNode(item.id)"
+              >
+                <!-- Expand/collapse icon -->
+                <span v-if="item.hasChildren" class="w-4 text-gray-500 select-none">
+                  {{ sbmExpandedNodes.has(item.id) ? '▼' : '▶' }}
+                </span>
+                <span v-else class="w-4"></span>
+                
+                <!-- Node icon based on type -->
+                <span v-if="item.type === 'material'" class="text-blue-500">●</span>
+                <span v-else-if="item.type === 'combination'" class="text-orange-500">◆</span>
+                <span v-else class="text-gray-400">📁</span>
+                
+                <!-- Label -->
+                <span :class="{ 'font-semibold': item.hasChildren, 'text-gray-700': !item.hasChildren }">
+                  {{ item.displayLabel }}
+                </span>
+                
+                <!-- Count badge -->
+                <span v-if="item.count && item.count > 1" class="text-xs text-gray-400 ml-1">
+                  ({{ item.count }})
+                </span>
+              </div>
+            </template>
+          </div>
+        </details>
+      </template>
     </div>
   </div>
 </template>

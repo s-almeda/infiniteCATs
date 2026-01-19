@@ -701,6 +701,331 @@ def get_community_embedding_stats():
     
     return jsonify({'stats': stats, 'avgInterCommunityDistance': avg_inter_community_dist})
 
+@app.route('/api/hierarchical-sbm', methods=['GET'])
+def get_hierarchical_sbm():
+    """
+    Compute hierarchical communities on bipartite material-combination graph.
+    Uses agglomerative Louvain: recursively merge communities until convergence.
+    
+    Returns:
+    {
+      "nodes": [
+        {"id": "Fire", "type": "material", "hierarchy": [0, 1, 2]},
+        {"id": "combo_0", "type": "combination", "label": "Fire+Water→Steam", "hierarchy": [0, 1, 2]},
+        ...
+      ],
+      "tree": {
+        "id": "root", "level": 2, "children": [
+          {"id": "L2_0", "level": 1, "children": [
+            {"id": "L1_0", "level": 0, "children": [
+              {"id": "Fire", "type": "material"},
+              {"id": "combo_0", "type": "combination"}
+            ]}
+          ]}
+        ]
+      },
+      "levels": 3
+    }
+    """
+    username = request.args.get('username')
+    
+    # Fetch combinations
+    conn = get_db()
+    cursor = conn.cursor()
+    if username:
+        cursor.execute(
+            'SELECT DISTINCT firstWord, secondWord, resultName FROM combinations WHERE username = ? ORDER BY id',
+            (username,)
+        )
+    else:
+        cursor.execute('SELECT DISTINCT firstWord, secondWord, resultName FROM combinations ORDER BY id')
+    rows = cursor.fetchall()
+    conn.close()
+    
+    # Build bipartite graph
+    materials = set(['Fire', 'Water', 'Earth', 'Air'])
+    combinations = []  # list of (combo_id, input1, input2, output)
+    
+    seen_combos = set()
+    for row in rows:
+        w1, w2, result = row['firstWord'], row['secondWord'], row['resultName']
+        materials.update([w1, w2, result])
+        # Canonical combination ID (sorted inputs)
+        sorted_inputs = tuple(sorted([w1, w2]))
+        combo_key = (sorted_inputs, result)
+        if combo_key not in seen_combos:
+            seen_combos.add(combo_key)
+            combo_id = f"combo_{len(combinations)}"
+            combinations.append({
+                'id': combo_id,
+                'input1': w1,
+                'input2': w2,
+                'output': result,
+                'label': f"{w1}+{w2}→{result}"
+            })
+    
+    # Create node list (materials first, then combinations)
+    material_list = sorted(materials)
+    all_nodes = []
+    node_to_idx = {}
+    
+    for i, m in enumerate(material_list):
+        all_nodes.append({'id': m, 'type': 'material'})
+        node_to_idx[m] = i
+    
+    for combo in combinations:
+        idx = len(all_nodes)
+        all_nodes.append({'id': combo['id'], 'type': 'combination', 'label': combo['label']})
+        node_to_idx[combo['id']] = idx
+    
+    # Build adjacency (bipartite: materials connect to combinations)
+    adjacency = {node['id']: {} for node in all_nodes}
+    
+    for combo in combinations:
+        combo_id = combo['id']
+        # Connect combo to its 3 materials
+        for mat in [combo['input1'], combo['input2'], combo['output']]:
+            if mat not in adjacency[combo_id]:
+                adjacency[combo_id][mat] = 0
+            adjacency[combo_id][mat] += 1
+            if combo_id not in adjacency[mat]:
+                adjacency[mat][combo_id] = 0
+            adjacency[mat][combo_id] += 1
+    
+    # Louvain-style community detection
+    def louvain_communities(nodes, adj, gamma=1.0, max_passes=50):
+        node_ids = [n['id'] for n in nodes]
+        
+        # Compute degrees
+        degrees = {}
+        m2 = 0
+        for nid in node_ids:
+            d = sum(adj.get(nid, {}).values())
+            degrees[nid] = d
+            m2 += d
+        
+        if m2 == 0:
+            return {nid: i for i, nid in enumerate(node_ids)}
+        
+        # Initialize: each node in its own community
+        community = {nid: nid for nid in node_ids}
+        comm_weight = {nid: degrees.get(nid, 0) for nid in node_ids}
+        
+        moved = True
+        passes = 0
+        while moved and passes < max_passes:
+            moved = False
+            passes += 1
+            for nid in node_ids:
+                current_comm = community[nid]
+                k_i = degrees.get(nid, 0)
+                neighbors = adj.get(nid, {})
+                
+                # Remove from current community
+                comm_weight[current_comm] = comm_weight.get(current_comm, 0) - k_i
+                
+                # Find best community
+                comm_connections = {}
+                for nb, w in neighbors.items():
+                    c = community.get(nb)
+                    if c is not None:
+                        comm_connections[c] = comm_connections.get(c, 0) + w
+                
+                best_comm = current_comm
+                best_gain = 0
+                for c, k_i_in in comm_connections.items():
+                    tot = comm_weight.get(c, 0)
+                    gain = k_i_in - gamma * (k_i * tot) / m2
+                    if gain > best_gain:
+                        best_gain = gain
+                        best_comm = c
+                
+                # Assign to best community
+                comm_weight[best_comm] = comm_weight.get(best_comm, 0) + k_i
+                if best_comm != current_comm and best_gain > 1e-10:
+                    community[nid] = best_comm
+                    moved = True
+        
+        # Renumber communities
+        unique_comms = list(set(community.values()))
+        comm_remap = {c: i for i, c in enumerate(unique_comms)}
+        return {nid: comm_remap[c] for nid, c in community.items()}
+    
+    # Build hierarchy by recursive Louvain
+    hierarchy_levels = []  # list of {nodeId: communityId}
+    current_nodes = all_nodes
+    current_adj = adjacency
+    
+    max_levels = 10
+    for level in range(max_levels):
+        # Run Louvain at this level
+        assignments = louvain_communities(current_nodes, current_adj, gamma=0.5)
+        hierarchy_levels.append(assignments)
+        
+        # Check if we've converged (only 1-2 communities or no change)
+        num_communities = len(set(assignments.values()))
+        if num_communities <= 2 or num_communities == len(current_nodes):
+            break
+        
+        # Build meta-graph for next level
+        meta_nodes = [{'id': f'L{level}_{i}'} for i in range(num_communities)]
+        meta_adj = {mn['id']: {} for mn in meta_nodes}
+        
+        # Aggregate edges between communities
+        for nid, neighbors in current_adj.items():
+            comm_a = assignments.get(nid)
+            if comm_a is None:
+                continue
+            meta_id_a = f'L{level}_{comm_a}'
+            for nb, w in neighbors.items():
+                comm_b = assignments.get(nb)
+                if comm_b is None or comm_a == comm_b:
+                    continue
+                meta_id_b = f'L{level}_{comm_b}'
+                if meta_id_b not in meta_adj[meta_id_a]:
+                    meta_adj[meta_id_a][meta_id_b] = 0
+                meta_adj[meta_id_a][meta_id_b] += w
+        
+        current_nodes = meta_nodes
+        current_adj = meta_adj
+    
+    # Build hierarchy path for each original node
+    for node in all_nodes:
+        node['hierarchy'] = []
+        current_id = node['id']
+        for level, assignments in enumerate(hierarchy_levels):
+            comm = assignments.get(current_id)
+            if comm is not None:
+                node['hierarchy'].append(comm)
+                current_id = f'L{level}_{comm}'
+            else:
+                break
+    
+    # Helper to get sample material names from a cluster node
+    def get_sample_materials(node, max_samples=3):
+        """Recursively collect material names from a cluster node"""
+        materials = []
+        
+        def collect(n):
+            if n.get('type') == 'material':
+                materials.append(n['id'])
+            elif 'children' in n and n['children']:
+                for child in n['children']:
+                    if len(materials) >= max_samples * 2:  # Collect more than needed for variety
+                        return
+                    collect(child)
+        
+        collect(node)
+        # Return unique materials, preferring shorter names
+        unique = list(dict.fromkeys(materials))
+        unique.sort(key=len)
+        return unique[:max_samples]
+    
+    def generate_cluster_label(node, level):
+        """Generate a readable label from sample materials in the cluster"""
+        samples = get_sample_materials(node, max_samples=3)
+        if samples:
+            if len(samples) == 1:
+                return samples[0]
+            elif len(samples) == 2:
+                return f"{samples[0]}, {samples[1]}"
+            else:
+                return f"{samples[0]}, {samples[1]}, {samples[2]}..."
+        return f"Cluster L{level}"
+
+    # Build tree structure - bottom up approach
+    def build_tree():
+        # Start with level 0: group original nodes by their level-0 community
+        level0_groups = {}
+        for node in all_nodes:
+            if node['hierarchy'] and len(node['hierarchy']) > 0:
+                comm = node['hierarchy'][0]
+                if comm not in level0_groups:
+                    level0_groups[comm] = []
+                level0_groups[comm].append({
+                    'id': node['id'],
+                    'type': node['type'],
+                    'label': node.get('label', node['id'])
+                })
+        
+        # Create level 0 cluster nodes
+        current_level_nodes = []
+        for comm, children in sorted(level0_groups.items()):
+            # Find a sample original node to get hierarchy path
+            sample_orig_id = children[0]['id']
+            sample_orig = next((n for n in all_nodes if n['id'] == sample_orig_id), None)
+            cluster_node = {
+                'id': f'L0_{comm}',
+                'level': 0,
+                'count': len(children),
+                'children': children,
+                '_hierarchy': sample_orig['hierarchy'] if sample_orig else [comm]
+            }
+            # Generate label from sample materials
+            cluster_node['label'] = generate_cluster_label(cluster_node, 0)
+            current_level_nodes.append(cluster_node)
+        
+        # Build higher levels
+        for level in range(1, len(hierarchy_levels)):
+            next_level_groups = {}
+            for node in current_level_nodes:
+                hierarchy = node.get('_hierarchy', [])
+                if len(hierarchy) > level:
+                    comm = hierarchy[level]
+                    if comm not in next_level_groups:
+                        next_level_groups[comm] = []
+                    next_level_groups[comm].append(node)
+            
+            if len(next_level_groups) <= 1:
+                # No more grouping possible
+                break
+                
+            # Create this level's cluster nodes
+            new_level_nodes = []
+            for comm, children in sorted(next_level_groups.items()):
+                # Get hierarchy from first child
+                sample_hierarchy = children[0].get('_hierarchy', [])
+                cluster_node = {
+                    'id': f'L{level}_{comm}',
+                    'level': level,
+                    'count': sum(c.get('count', 1) for c in children),
+                    'children': children,
+                    '_hierarchy': sample_hierarchy
+                }
+                # Generate label from sample materials
+                cluster_node['label'] = generate_cluster_label(cluster_node, level)
+                new_level_nodes.append(cluster_node)
+            
+            current_level_nodes = new_level_nodes
+        
+        # Remove internal _hierarchy field from all nodes recursively
+        def clean_hierarchy(nodes):
+            for node in nodes:
+                node.pop('_hierarchy', None)
+                if 'children' in node and node['children']:
+                    clean_hierarchy(node['children'])
+        
+        clean_hierarchy(current_level_nodes)
+        
+        return current_level_nodes
+    
+    # Build final tree
+    tree_children = build_tree()
+    top_level = len(hierarchy_levels) - 1
+    
+    tree = {
+        'id': 'root',
+        'level': top_level + 1,
+        'count': len(all_nodes),
+        'children': tree_children or []
+    }
+    
+    return jsonify({
+        'nodes': all_nodes,
+        'tree': tree,
+        'levels': len(hierarchy_levels)
+    })
+
 if __name__ == '__main__':
     init_db()
     app.run(debug=True, host='0.0.0.0', port=3000)
