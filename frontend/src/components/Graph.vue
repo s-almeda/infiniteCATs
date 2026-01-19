@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, onBeforeUnmount, ref, watch } from "vue";
+import { onMounted, onBeforeUnmount, ref, watch, computed } from "vue";
 import {
   forceSimulation,
   forceLink,
@@ -58,6 +58,13 @@ let communityColors = {}; // nodeId -> color string
 const communitySummaries = ref([]);
 const globalCentralization = ref(0);
 const globalInterCommunityDistance = ref(0);
+const avgCommunitySpread = computed(() => {
+  const spreads = communitySummaries.value
+    .filter(c => c.count >= 2 && c.avgDistToCentroid !== undefined)
+    .map(c => c.avgDistToCentroid);
+  if (spreads.length === 0) return 0;
+  return spreads.reduce((a, b) => a + b, 0) / spreads.length;
+});
 const COMMUNITY_PARAMS = {
   gamma: 0.5,      // < 1 => coarser communities; > 1 => finer communities
   maxPasses: 50,   // number of local-move sweeps
@@ -260,6 +267,12 @@ function draw(nodes, links) {
   // Use specialized drawing for linkograph and path linkography modes
   if (renderMode.value === 'Linkograph' || renderMode.value === 'Path Linkography') {
     drawLinkograph(nodes, links);
+    return;
+  }
+  
+  // Use specialized drawing for community graph mode
+  if (renderMode.value === 'Community') {
+    drawCommunityGraph(nodes, links);
     return;
   }
   
@@ -1753,6 +1766,173 @@ function buildLinkograph(activeLinks) {
   draw(expandedNodes, expandedLinks);
 }
 
+function buildCommunityGraph(activeLinks) {
+  // Build a graph where nodes are communities and edges are weighted by inter-community links
+  expandedNodes = [];
+  expandedLinks = [];
+  
+  // Get unique communities from communityAssignments
+  const communitySet = new Set();
+  Object.values(communityAssignments).forEach(commId => communitySet.add(commId));
+  
+  // Get community summaries for colors and sizes
+  const commSummaryMap = new Map();
+  communitySummaries.value.forEach(cs => commSummaryMap.set(cs.id, cs));
+  
+  // Create a node for each community
+  const commNodeMap = new Map(); // commId -> node
+  communitySet.forEach(commId => {
+    const summary = commSummaryMap.get(commId);
+    const node = {
+      id: `comm_${commId}`,
+      commId: commId,
+      label: `Community ${commId}`,
+      count: summary?.count ?? 1,
+      color: summary?.color ?? '#219ebc',
+      examples: summary?.labels?.slice(0, 3).join(', ') ?? '',
+      x: Math.random() * width.value,
+      y: Math.random() * height.value
+    };
+    expandedNodes.push(node);
+    commNodeMap.set(commId, node);
+  });
+  
+  // Count inter-community links
+  const edgeWeights = new Map(); // "commA_commB" -> count (canonical order)
+  
+  activeLinks.forEach(link => {
+    const { from1, from2, to } = link;
+    
+    // Get communities for each material
+    const comm1 = communityAssignments[from1];
+    const comm2 = communityAssignments[from2];
+    const commTo = communityAssignments[to];
+    
+    // Count edges between different communities
+    const countEdge = (ca, cb) => {
+      if (ca === undefined || cb === undefined || ca === cb) return;
+      const key = ca < cb ? `${ca}_${cb}` : `${cb}_${ca}`;
+      edgeWeights.set(key, (edgeWeights.get(key) || 0) + 1);
+    };
+    
+    countEdge(comm1, commTo);
+    countEdge(comm2, commTo);
+    countEdge(comm1, comm2);
+  });
+  
+  // Create edges between communities
+  edgeWeights.forEach((weight, key) => {
+    const [commA, commB] = key.split('_');
+    const nodeA = commNodeMap.get(commA);
+    const nodeB = commNodeMap.get(commB);
+    if (nodeA && nodeB) {
+      expandedLinks.push({
+        source: nodeA,
+        target: nodeB,
+        weight: weight
+      });
+    }
+  });
+  
+  storedNodes.value = expandedNodes;
+  
+  // Set up force simulation for community graph
+  if (simulation) {
+    simulation.stop();
+  }
+  
+  // Find max weight for scaling
+  const maxWeight = Math.max(1, ...expandedLinks.map(l => l.weight));
+  
+  simulation = forceSimulation(expandedNodes)
+    .force("link",
+      forceLink(expandedLinks)
+        .id(d => d.id)
+        .distance(l => {
+          // Stronger connections (more links) = shorter distance
+          const normalizedWeight = l.weight / maxWeight;
+          return 200 - normalizedWeight * 150; // Range: 50-200
+        })
+        .strength(l => {
+          const normalizedWeight = l.weight / maxWeight;
+          return 0.3 + normalizedWeight * 0.7; // Range: 0.3-1.0
+        })
+    )
+    .force("charge", forceManyBody().strength(-500))
+    .force("center", forceCenter(width.value / 2, height.value / 2));
+  
+  simulation.on("tick", () => {
+    draw(expandedNodes, expandedLinks);
+  });
+}
+
+function drawCommunityGraph(nodes, links) {
+  ctx.clearRect(0, 0, width.value, height.value);
+  
+  // Apply zoom and pan translation
+  ctx.save();
+  ctx.translate(panX.value, panY.value);
+  ctx.translate(width.value / 2, height.value / 2);
+  ctx.scale(zoomLevel.value, zoomLevel.value);
+  ctx.translate(-width.value / 2, -height.value / 2);
+  
+  // Find max weight and max count for scaling
+  const maxWeight = Math.max(1, ...links.map(l => l.weight));
+  const maxCount = Math.max(1, ...nodes.map(n => n.count));
+  
+  // Draw edges with thickness proportional to weight
+  links.forEach(link => {
+    const normalizedWeight = link.weight / maxWeight;
+    const lineWidth = 1 + normalizedWeight * 12; // Range: 1-13px
+    
+    ctx.beginPath();
+    ctx.strokeStyle = `rgba(100, 100, 100, ${0.3 + normalizedWeight * 0.5})`;
+    ctx.lineWidth = lineWidth;
+    ctx.moveTo(link.source.x, link.source.y);
+    ctx.lineTo(link.target.x, link.target.y);
+    ctx.stroke();
+    
+    // Draw weight label at midpoint
+    const midX = (link.source.x + link.target.x) / 2;
+    const midY = (link.source.y + link.target.y) / 2;
+    ctx.fillStyle = '#333';
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(link.weight.toString(), midX, midY);
+  });
+  
+  // Draw nodes with size proportional to community size
+  nodes.forEach(node => {
+    const normalizedCount = node.count / maxCount;
+    const radius = normalizedCount * 55; // Range: 0-55px, no minimum
+    
+    // Draw node circle
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI);
+    ctx.fillStyle = node.color;
+    ctx.fill();
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    
+    // Draw label
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`${node.count}`, node.x, node.y - 6);
+    
+    // Draw examples below count
+    ctx.font = '9px sans-serif';
+    ctx.fillStyle = '#fff';
+    const exampleText = node.examples.length > 15 ? node.examples.substring(0, 15) + '...' : node.examples;
+    ctx.fillText(exampleText, node.x, node.y + 8);
+  });
+  
+  ctx.restore();
+}
+
 function rebuildGraphForTimeline(fullReset = false) {
   if (!originalLinks || originalLinks.length === 0 || !allNodes) return;
   
@@ -1777,6 +1957,12 @@ function rebuildGraphForTimeline(fullReset = false) {
   // Handle Linkograph mode separately
   if (renderMode.value === 'Linkograph') {
     buildLinkograph(activeLinks);
+    return;
+  }
+  
+  // Handle Community graph mode separately
+  if (renderMode.value === 'Community') {
+    buildCommunityGraph(activeLinks);
     return;
   }
   
@@ -2134,6 +2320,7 @@ onBeforeUnmount(() => {
             <option value="Labeled Arrows">Labeled Arrows</option>
             <option value="Linkograph">Linkograph</option>
             <option value="Path Linkography">Path Linkography</option>
+            <option value="Community">Community Graph</option>
           </select>
         </div>
         <div class="flex items-center gap-3 mb-3">
@@ -2176,10 +2363,11 @@ onBeforeUnmount(() => {
 
     <!-- Communities List (shown when colorMode is communities or user is logged in) -->
     <div v-if="colorMode === 'communities' || isLoggedIn" class="w-full max-w-4xl border border-gray-200 rounded-md p-3 bg-white shadow-sm">
-      <div class="flex items-center justify-between mb-2">
+      <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
         <h3 class="text-sm font-semibold">Communities</h3>
         <span class="text-xs text-blue-600" title="Freeman Degree Centralization for the entire graph">Global Centr: {{ globalCentralization.toFixed(3) }}</span>
-        <span class="text-xs text-teal-600" title="Average Euclidean distance between community centroids (how separated communities are in semantic space)">Inter-Comm Dist: {{ globalInterCommunityDistance.toFixed(3) }}</span>
+        <span class="text-xs text-purple-600" title="Average semantic spread across all communities (avg cosine distance to centroid)">Avg Spread: {{ avgCommunitySpread.toFixed(3) }}</span>
+        <span class="text-xs text-teal-600" title="Average cosine distance between community centroids (how separated communities are in semantic space)">Inter-Comm Dist: {{ globalInterCommunityDistance.toFixed(3) }}</span>
       </div>
       <div class="flex flex-col gap-2">
         <div v-if="communitySummaries.length === 0" class="text-xs text-gray-500">Communities will appear after data loads.</div>
