@@ -249,6 +249,12 @@ def get_material_distance(material1: str, material2: str) -> dict:
     
     return {'material1': material1, 'material2': material2, 'similarity': similarity}
 
+def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+        dot_product = np.dot(a, b)
+        norm_a = np.linalg.norm(a)
+        norm_b = np.linalg.norm(b)
+        return float(dot_product / (norm_a * norm_b))
+
 def get_material_distance_to_avg(material1: str, material2: str, material3: str) -> tuple[float, float, float]:
     """ calculate the cosine similarity distance between each material and the average embedding of the three materials """
     conn = get_db()
@@ -276,12 +282,6 @@ def get_material_distance_to_avg(material1: str, material2: str, material3: str)
     
     # Calculate average embedding
     avg_embedding = (embedding1 + embedding2 + embedding3) / 3.0
-    
-    def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-        dot_product = np.dot(a, b)
-        norm_a = np.linalg.norm(a)
-        norm_b = np.linalg.norm(b)
-        return float(dot_product / (norm_a * norm_b))
     
     sim1 = (1 - cosine_similarity(embedding1, avg_embedding))/2
     sim2 = (1 - cosine_similarity(embedding2, avg_embedding))/2
@@ -316,9 +316,12 @@ def get_material_distance_LA(material1: str, material2: str, material3: str) -> 
     embedding1 = np.frombuffer(result1['embedding'], dtype=np.float32)
     embedding2 = np.frombuffer(result2['embedding'], dtype=np.float32)
     embedding3 = np.frombuffer(result3['embedding'], dtype=np.float32)
-    ab = float(np.linalg.norm(embedding1 - embedding2))
-    ac = float(np.linalg.norm(embedding1 - embedding3))
-    bc = float(np.linalg.norm(embedding2 - embedding3))
+    ab = (1 - cosine_similarity(embedding1, embedding2))/2
+    ac = (1 - cosine_similarity(embedding1, embedding3))/2
+    bc = (1 - cosine_similarity(embedding2, embedding3))/2
+    # ab = float(np.linalg.norm(embedding1 - embedding2))
+    # ac = float(np.linalg.norm(embedding1 - embedding3))
+    # bc = float(np.linalg.norm(embedding2 - embedding3))
     try:
         c = (bc + ac - ab) / 2
         a = ac - c
