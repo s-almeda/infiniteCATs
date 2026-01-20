@@ -213,6 +213,62 @@ export async function fetchUserDistanceMatrix(username) {
   return data;
 }
 
+// Fetch global graph data (all combinations from all users)
+export async function fetchGlobalGraphData() {
+  const apiUrl = import.meta.env.VITE_FLASK_API_URL || 'http://localhost:3000';
+
+  console.log(`[GlobalGraph] Fetching global graph data...`);
+  const res = await fetch(`${apiUrl}/api/graph`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch global graph data: ${res.status}`);
+  }
+  const data = await res.json();
+  console.log(`[GlobalGraph] Received ${data.nodes.length} nodes, ${data.links.length} links`);
+  return data;
+}
+
+// Fetch radial layout with pre-computed positions from backend
+export async function fetchRadialLayout(username = null, width = 1000, height = 1000) {
+  const apiUrl = import.meta.env.VITE_FLASK_API_URL || 'http://localhost:3000';
+  
+  let url = `${apiUrl}/api/radial-layout?width=${width}&height=${height}`;
+  if (username) {
+    url += `&username=${encodeURIComponent(username)}`;
+  }
+  
+  console.log(`[RadialLayout] Fetching layout${username ? ` for user: ${username}` : ' (global)'}...`);
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch radial layout: ${res.status}`);
+  }
+  const data = await res.json();
+  console.log(`[RadialLayout] Received ${data.nodes.length} nodes with positions`);
+  return data;
+}
+
+// Fetch full pairwise distance matrix for ALL materials
+export async function fetchGlobalDistanceMatrix() {
+  const apiUrl = import.meta.env.VITE_FLASK_API_URL || 'http://localhost:3000';
+
+  console.log(`[GlobalDistanceMatrix] Fetching global distance matrix...`);
+  try {
+    const res = await fetch(`${apiUrl}/api/global-distance-matrix`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch global distance matrix: ${res.status}`);
+    }
+    const text = await res.text();
+    if (!text) {
+      throw new Error('Empty response from global distance matrix endpoint');
+    }
+    const data = JSON.parse(text);
+    console.log(`[GlobalDistanceMatrix] Received ${Object.keys(data.distances).length} distances for ${data.materials.length} materials`);
+    return data;
+  } catch (err) {
+    console.error('[GlobalDistanceMatrix] Error:', err);
+    throw err;
+  }
+}
+
 // Compute when each material was first crafted per user
 // Returns a map of nodeId -> { username -> craftIndex }
 export function computeCraftTimes(nodes, links) {

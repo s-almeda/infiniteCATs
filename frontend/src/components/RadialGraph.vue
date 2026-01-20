@@ -7,8 +7,7 @@ import {
   computeCommunities,
   assignCommunityColors,
   buildCommunitySummaries,
-  fetchUserGraphData,
-  fetchUserDistanceMatrix
+  fetchRadialLayout
 } from "@/utils/communities";
 
 
@@ -36,122 +35,78 @@ const hoverPos = ref({ x: 0, y: 0 });
 const loading = ref(true);
 const error = ref(null);
 
+// Track if we're in global mode
+const isGlobalMode = ref(false);
+
 let allNodes = [];
 let allLinks = [];
-let distanceMatrix = new Map(); // Full distance matrix from API
 let positionedNodes = [];
 let communityAssignments = {};
 let communityColors = {};
 const communitySummaries = ref([]);
+const userSummaries = ref([]); // For global mode: summaries by username
 
-// Convert API distance object to Map for fast lookup
-function buildDistanceMatrixFromAPI(apiDistances) {
-  console.log("[RadialGraph] Building distance matrix from API data...");
-  const distances = new Map();
+// Assign colors to nodes based on the username who first discovered them (for global mode)
+function assignUserColors(nodes) {
+  // Palette for users (distinct colors)
+  const palette = [
+    '#e63946', // red
+    '#2a9d8f', // teal
+    '#e9c46a', // gold
+    '#264653', // dark blue
+    '#f4a261', // orange
+    '#8338ec', // purple
+    '#06d6a0', // mint
+    '#ef476f', // pink
+    '#118ab2', // blue
+    '#073b4c', // navy
+    '#d62828', // crimson
+    '#6dccb5', // seafoam
+    '#a4c639', // lime
+    '#b86ee0', // violet
+    '#5ca9a5'  // teal-gray
+  ];
+
+  const baseMaterials = new Set(['Fire', 'Water', 'Earth', 'Air']);
   
-  let count = 0;
-  for (const [key, dist] of Object.entries(apiDistances)) {
-    // API returns "A|B" format, we need both directions
-    distances.set(key, dist);
-    // Also add reverse direction
-    const [a, b] = key.split('|');
-    distances.set(`${b}|${a}`, dist);
-    count++;
-  }
-  
-  console.log(`[RadialGraph] Distance matrix built: ${count} pairs (${distances.size} entries with both directions)`);
-  return distances;
-}
-
-// Order nodes on a ring by similarity using nearest-neighbor greedy algorithm
-function orderNodesBySimilarity(ringNodes, distMatrix) {
-  if (ringNodes.length <= 2) return ringNodes;
-
-  console.log(`[RadialGraph] Ordering ${ringNodes.length} nodes by similarity...`);
-
-  const getDistance = (a, b) => {
-    const key = `${a.id}|${b.id}`;
-    return distMatrix.get(key) ?? Infinity;
-  };
-
-  const ordered = [];
-  const remaining = new Set(ringNodes);
-
-  // Start with the first node
-  let current = ringNodes[0];
-  ordered.push(current);
-  remaining.delete(current);
-
-  let processed = 0;
-  const total = ringNodes.length;
-
-  // Greedily pick the nearest unvisited node
-  while (remaining.size > 0) {
-    let nearest = null;
-    let nearestDist = Infinity;
-
-    let nonInf = 0;
-    for (const node of remaining) {
-      const dist = getDistance(current, node);
-      if (dist < Infinity) nonInf++;
-      if (dist < nearestDist) {
-        nearestDist = dist;
-        nearest = node;
-      }
-    }
-
-    processed++;
-    if (processed % 50 === 0 || processed === total - 1) {
-      console.log(`[RadialGraph] Ordering progress: ${processed}/${total} nodes, ${nonInf} non-infinity distances available`);
-    }
-
-    if (nearest) {
-      ordered.push(nearest);
-      remaining.delete(nearest);
-      current = nearest;
-    } else {
-      // No connected node found, just add remaining nodes
-      console.log(`[RadialGraph] Adding ${remaining.size} unconnected nodes`);
-      for (const node of remaining) {
-        ordered.push(node);
-      }
-      break;
-    }
-  }
-
-  console.log(`[RadialGraph] Ordering complete: ${ordered.length} nodes ordered`);
-  return ordered;
-}
-
-function layoutRadialGraph(nodes) {
-  console.log(`[RadialGraph] Starting layout for ${nodes.length} nodes...`);
-  
-  // Find max craft time (excluding base materials at -1)
-  const craftTimes = nodes.map(n => n.craftTime).filter(t => t >= 0);
-  const maxCraftTime = Math.max(...craftTimes, 1);
-
-  // Calculate max radius
-  const maxRadius = Math.min(width.value, height.value) / 2 - 50;
-
-  // Order ALL nodes by similarity using the pre-loaded distance matrix
-  const orderedNodes = orderNodesBySimilarity(nodes, distanceMatrix);
-
-  console.log(`[RadialGraph] Layout: ${nodes.length} nodes, maxCraftTime=${maxCraftTime}`);
-
-  // Position nodes: angle from ordering, radius from craftTime
-  const angleStep = (2 * Math.PI) / Math.max(orderedNodes.length, 1);
-
-  orderedNodes.forEach((node, i) => {
-    const angle = i * angleStep - Math.PI / 2; // Start from top
-    const radius = node.craftTime === -1 ? 0 : (node.craftTime / maxCraftTime) * maxRadius;
-
-    node.x = centerX.value + radius * Math.cos(angle);
-    node.y = centerY.value + radius * Math.sin(angle);
-    node.radius = radius;
-    node.angle = angle;
+  // Collect all unique usernames and assign colors
+  const usernames = [...new Set(nodes.map(n => n.firstDiscoverer).filter(Boolean))];
+  const userToColor = new Map();
+  usernames.forEach((user, idx) => {
+    userToColor.set(user, palette[idx % palette.length]);
   });
-
-  return orderedNodes;
+  
+  // Build node colors
+  const nodeColors = {};
+  nodes.forEach(node => {
+    if (baseMaterials.has(node.id)) {
+      nodeColors[node.id] = '#999999';
+    } else {
+      const user = node.firstDiscoverer;
+      nodeColors[node.id] = user ? userToColor.get(user) : '#cccccc';
+    }
+  });
+  
+  // Build user summaries for legend
+  const userCounts = new Map();
+  nodes.forEach(node => {
+    if (!baseMaterials.has(node.id) && node.firstDiscoverer) {
+      userCounts.set(node.firstDiscoverer, (userCounts.get(node.firstDiscoverer) || 0) + 1);
+    }
+  });
+  
+  const summaries = [...userCounts.entries()]
+    .map(([user, count]) => ({
+      id: user,
+      color: userToColor.get(user),
+      count,
+      label: user
+    }))
+    .sort((a, b) => b.count - a.count);
+  
+  console.log(`[RadialGraph] Assigned colors for ${usernames.length} users`);
+  
+  return { nodeColors, summaries };
 }
 
 function draw() {
@@ -286,39 +241,39 @@ async function loadData() {
   error.value = null;
 
   try {
-    // Need a username to fetch user-specific graph
-    if (!username.value) {
-      error.value = 'Please log in to view your discovery graph';
-      loading.value = false;
-      return;
-    }
-
-    console.log(`[RadialGraph] Loading data for user: ${username.value}`);
-
-    // Fetch user-specific graph data and distance matrix in parallel
-    const [graphData, distanceData] = await Promise.all([
-      fetchUserGraphData(username.value),
-      fetchUserDistanceMatrix(username.value)
-    ]);
-
-    const { nodes, links } = graphData;
-    console.log(`[RadialGraph] Fetched user data: ${nodes.length} nodes, ${links.length} links`);
+    // Fetch radial layout with pre-computed positions from backend
+    const layoutData = await fetchRadialLayout(
+      username.value || null,
+      width.value,
+      height.value
+    );
+    
+    const { nodes, links } = layoutData;
+    isGlobalMode.value = !username.value;
+    
+    console.log(`[RadialGraph] Fetched layout: ${nodes.length} nodes, ${links.length} links (global=${isGlobalMode.value})`);
 
     allLinks = links;
-    
-    // Build the distance matrix from API response
-    distanceMatrix = buildDistanceMatrixFromAPI(distanceData.distances);
-
-    // Compute communities
-    console.log("[RadialGraph] Computing communities...");
-    communityAssignments = computeCommunities(nodes, links, COMMUNITY_PARAMS);
-    communityColors = assignCommunityColors(communityAssignments);
-    communitySummaries.value = buildCommunitySummaries(communityAssignments, communityColors, nodes);
-
     allNodes = nodes;
+    
+    // Nodes already have x, y positions from backend
+    positionedNodes = nodes;
 
-    // Layout nodes
-    positionedNodes = layoutRadialGraph([...allNodes]);
+    // Assign colors based on mode
+    if (isGlobalMode.value) {
+      // Global mode: color by first discoverer (included in node data from backend)
+      const userColors = assignUserColors(nodes);
+      communityColors = userColors.nodeColors;
+      userSummaries.value = userColors.summaries;
+      communitySummaries.value = [];
+    } else {
+      // User mode: compute communities for coloring
+      console.log("[RadialGraph] Computing communities...");
+      communityAssignments = computeCommunities(nodes, links, COMMUNITY_PARAMS);
+      communityColors = assignCommunityColors(communityAssignments);
+      communitySummaries.value = buildCommunitySummaries(communityAssignments, communityColors, nodes);
+      userSummaries.value = [];
+    }
 
     // Set loading false so canvas renders, then draw on next tick
     loading.value = false;
@@ -351,7 +306,12 @@ onMounted(() => {
 
 <template>
   <div class="radial-graph">
-    <h2 class="text-lg font-semibold mb-2">Radial Discovery Graph</h2>
+    <h2 class="text-lg font-semibold mb-2">
+      {{ isGlobalMode ? 'Global Radial Discovery Graph' : 'Radial Discovery Graph' }}
+    </h2>
+    <p v-if="isGlobalMode" class="text-xs text-gray-500 mb-2">
+      Showing all discoveries, colored by first discoverer
+    </p>
 
     <div v-if="loading" class="text-gray-500">Loading...</div>
     <div v-else-if="error" class="text-red-500">Error: {{ error }}</div>
@@ -379,7 +339,23 @@ onMounted(() => {
       </div>
     </div>
 
-    <div class="mt-4">
+    <!-- User legend (global mode) -->
+    <div v-if="isGlobalMode && userSummaries.length > 0" class="mt-4">
+      <h3 class="text-sm font-semibold mb-2">First Discoverers</h3>
+      <div class="flex flex-wrap gap-2">
+        <div
+          v-for="user in userSummaries.slice(0, 15)"
+          :key="user.id"
+          class="flex items-center gap-1 text-xs"
+        >
+          <span class="w-3 h-3 rounded-sm" :style="{ backgroundColor: user.color }"></span>
+          <span>{{ user.label }} ({{ user.count }})</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Community legend (user mode) -->
+    <div v-else-if="!isGlobalMode && communitySummaries.length > 0" class="mt-4">
       <h3 class="text-sm font-semibold mb-2">Communities</h3>
       <div class="flex flex-wrap gap-2">
         <div
