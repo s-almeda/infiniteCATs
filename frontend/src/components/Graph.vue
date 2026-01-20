@@ -627,6 +627,8 @@ async function recomputeCommunities() {
     communityAssignments = computeCommunitiesInDegreeOnly(allNodes, originalLinks, COMMUNITY_PARAMS);
   } else if (communityAlgorithm.value === 'out-degree') {
     communityAssignments = computeCommunitiesOutDegreeOnly(allNodes, originalLinks, COMMUNITY_PARAMS);
+  } else if (communityAlgorithm.value === 'infomap') {
+    communityAssignments = computeCommunitiesInfomap(allNodes, originalLinks, COMMUNITY_PARAMS);
   } else {
     communityAssignments = computeCommunities(allNodes, originalLinks, COMMUNITY_PARAMS);
   }
@@ -1125,6 +1127,244 @@ function computeCommunitiesOutDegreeOnly(nodes, links, params = COMMUNITY_PARAMS
       if (bestComm !== currentComm && bestGain > minGain) {
         community.set(id, bestComm);
         moved = true;
+      }
+    });
+  }
+
+  const assignment = {};
+  nodeIds.forEach(id => { assignment[id] = community.get(id); });
+  return assignment;
+}
+
+function computeCommunitiesInfomap(nodes, links, params = COMMUNITY_PARAMS) {
+  // Infomap-style community detection using random walk and information theory
+  // Minimizes the expected description length of a random walk on the network
+  // Based on the map equation: L = qH(Q) + sum_i(p_i * H(P_i))
+  const nodeIds = nodes.map(n => n.id);
+  const outAdj = new Map(); // id -> Map(neighborId -> weight) for outgoing edges
+  const inAdj = new Map();  // id -> Map(neighborId -> weight) for incoming edges
+
+  const addDirectedEdge = (from, to) => {
+    if (!from || !to) return;
+    if (!outAdj.has(from)) outAdj.set(from, new Map());
+    if (!inAdj.has(to)) inAdj.set(to, new Map());
+    const outMap = outAdj.get(from);
+    outMap.set(to, (outMap.get(to) || 0) + 1);
+    const inMap = inAdj.get(to);
+    inMap.set(from, (inMap.get(from) || 0) + 1);
+  };
+
+  // Build directed edges from combination links
+  links.forEach(l => {
+    let added = false;
+    if (l.from1 && l.to) {
+      addDirectedEdge(l.from1, l.to);
+      added = true;
+    }
+    if (l.from2 && l.to) {
+      addDirectedEdge(l.from2, l.to);
+      added = true;
+    }
+    if (!added) {
+      const a = l.source?.id ?? l.source;
+      const b = l.target?.id ?? l.target ?? l.to;
+      addDirectedEdge(a, b);
+    }
+  });
+
+  // Compute out-degrees and in-degrees
+  const outDegrees = new Map();
+  const inDegrees = new Map();
+  let totalEdges = 0;
+
+  nodeIds.forEach(id => {
+    let outDeg = 0;
+    let inDeg = 0;
+    if (outAdj.has(id)) {
+      outAdj.get(id).forEach(w => { outDeg += w; });
+    }
+    if (inAdj.has(id)) {
+      inAdj.get(id).forEach(w => { inDeg += w; });
+    }
+    outDegrees.set(id, outDeg);
+    inDegrees.set(id, inDeg);
+    totalEdges += outDeg;
+  });
+
+  if (totalEdges === 0) {
+    const assignment = {};
+    nodeIds.forEach((id, idx) => { assignment[id] = idx; });
+    return assignment;
+  }
+
+  // Compute PageRank-like stationary distribution (teleport probability tau = 0.15)
+  const tau = 0.15;
+  const numNodes = nodeIds.length;
+  let pagerank = new Map();
+  const danglingNodes = nodeIds.filter(id => (outDegrees.get(id) || 0) === 0);
+
+  // Initialize uniform distribution
+  nodeIds.forEach(id => pagerank.set(id, 1.0 / numNodes));
+
+  // Power iteration for PageRank
+  for (let iter = 0; iter < 100; iter++) {
+    const newPagerank = new Map();
+    let danglingSum = 0;
+    danglingNodes.forEach(id => { danglingSum += pagerank.get(id) || 0; });
+
+    nodeIds.forEach(id => {
+      let rank = tau / numNodes; // teleportation
+      rank += (1 - tau) * danglingSum / numNodes; // dangling node contribution
+      
+      // Contribution from incoming edges
+      const incoming = inAdj.get(id) || new Map();
+      incoming.forEach((w, srcId) => {
+        const srcOutDeg = outDegrees.get(srcId) || 1;
+        rank += (1 - tau) * (pagerank.get(srcId) || 0) * w / srcOutDeg;
+      });
+      newPagerank.set(id, rank);
+    });
+
+    // Normalize
+    let sum = 0;
+    newPagerank.forEach(v => { sum += v; });
+    if (sum > 0) {
+      newPagerank.forEach((v, k) => newPagerank.set(k, v / sum));
+    }
+    pagerank = newPagerank;
+  }
+
+  // Helper: entropy function H(p) = -sum(p_i * log2(p_i))
+  const entropy = (probs) => {
+    let h = 0;
+    probs.forEach(p => {
+      if (p > 0) h -= p * Math.log2(p);
+    });
+    return h;
+  };
+
+  // Helper: plogp(x) = x * log2(x) or 0 if x <= 0
+  const plogp = (x) => (x > 0 ? x * Math.log2(x) : 0);
+
+  // Compute map equation codelength for a given partition
+  const computeCodelength = (community, nodeIds) => {
+    const moduleNodes = new Map(); // moduleId -> Set of nodeIds
+    const modulePagerank = new Map(); // moduleId -> sum of pagerank
+    const moduleExitFlow = new Map(); // moduleId -> exit probability
+
+    // Group nodes by module
+    nodeIds.forEach(id => {
+      const mod = community.get(id);
+      if (!moduleNodes.has(mod)) moduleNodes.set(mod, new Set());
+      moduleNodes.get(mod).add(id);
+      modulePagerank.set(mod, (modulePagerank.get(mod) || 0) + (pagerank.get(id) || 0));
+    });
+
+    // Compute exit flow for each module
+    moduleNodes.forEach((nodes, mod) => {
+      let exitFlow = 0;
+      nodes.forEach(id => {
+        const pr = pagerank.get(id) || 0;
+        const outDeg = outDegrees.get(id) || 0;
+        if (outDeg > 0) {
+          const outNeighbors = outAdj.get(id) || new Map();
+          outNeighbors.forEach((w, tgtId) => {
+            // If target is in different module, add to exit flow
+            if (!nodes.has(tgtId)) {
+              exitFlow += pr * w / outDeg;
+            }
+          });
+        }
+        // Add teleportation exit
+        exitFlow += tau * pr * (numNodes - nodes.size) / numNodes;
+      });
+      moduleExitFlow.set(mod, exitFlow);
+    });
+
+    // Calculate codelength using map equation
+    // L = q * H(Q) + sum_m(p_m + q_m) * H(P_m)
+    // where q = sum of exit flows, H(Q) = entropy of exit distribution
+    // p_m = module pagerank, q_m = module exit flow
+
+    let totalExit = 0;
+    moduleExitFlow.forEach(q => { totalExit += q; });
+
+    // Index codelength: q * H(Q)
+    let indexCodelength = 0;
+    if (totalExit > 0) {
+      const exitProbs = [];
+      moduleExitFlow.forEach(q => { if (q > 0) exitProbs.push(q / totalExit); });
+      indexCodelength = totalExit * entropy(exitProbs);
+    }
+
+    // Module codelength: sum_m (p_m + q_m) * H(P_m)
+    let moduleCodelength = 0;
+    moduleNodes.forEach((nodes, mod) => {
+      const modPr = modulePagerank.get(mod) || 0;
+      const modExit = moduleExitFlow.get(mod) || 0;
+      const modTotal = modPr + modExit;
+      
+      if (modTotal > 0 && nodes.size > 0) {
+        // Entropy of movements within module + exit
+        const probs = [];
+        nodes.forEach(id => {
+          const pr = pagerank.get(id) || 0;
+          probs.push(pr / modTotal);
+        });
+        if (modExit > 0) probs.push(modExit / modTotal);
+        moduleCodelength += modTotal * entropy(probs);
+      }
+    });
+
+    return indexCodelength + moduleCodelength;
+  };
+
+  // Initialize each node in its own community
+  let community = new Map();
+  nodeIds.forEach(id => community.set(id, id));
+
+  let currentCodelength = computeCodelength(community, nodeIds);
+  let improved = true;
+  const maxPasses = params.maxPasses ?? 50;
+  let pass = 0;
+
+  while (improved && pass < maxPasses) {
+    improved = false;
+    pass++;
+
+    // Try moving each node to neighbor's community
+    nodeIds.forEach(id => {
+      const currentMod = community.get(id);
+      const neighbors = new Set();
+      
+      // Collect neighboring modules (via both in and out edges)
+      const outNeighbors = outAdj.get(id) || new Map();
+      const inNeighbors = inAdj.get(id) || new Map();
+      outNeighbors.forEach((_, nb) => neighbors.add(community.get(nb)));
+      inNeighbors.forEach((_, nb) => neighbors.add(community.get(nb)));
+      neighbors.delete(currentMod); // Don't check current module
+
+      let bestMod = currentMod;
+      let bestCodelength = currentCodelength;
+
+      neighbors.forEach(targetMod => {
+        // Try moving node to targetMod
+        community.set(id, targetMod);
+        const newCodelength = computeCodelength(community, nodeIds);
+        
+        if (newCodelength < bestCodelength - 1e-10) {
+          bestCodelength = newCodelength;
+          bestMod = targetMod;
+        }
+        
+        // Restore original
+        community.set(id, currentMod);
+      });
+
+      if (bestMod !== currentMod) {
+        community.set(id, bestMod);
+        currentCodelength = bestCodelength;
+        improved = true;
       }
     });
   }
@@ -2984,11 +3224,13 @@ onBeforeUnmount(() => {
           <option value="directed">Louvain (Directed)</option>
           <option value="in-degree">Louvain (In-Degree Only)</option>
           <option value="out-degree">Louvain (Out-Degree Only)</option>
+          <option value="infomap">Infomap (Random Walk)</option>
         </select>
         <span class="text-xs text-gray-500">
           {{ communityAlgorithm === 'directed' ? 'Considers edge direction (A→B ≠ B→A)' : 
              communityAlgorithm === 'in-degree' ? 'Groups by shared predecessors (what points to them)' :
              communityAlgorithm === 'out-degree' ? 'Groups by shared successors (what they produce)' :
+             communityAlgorithm === 'infomap' ? 'Minimizes random walk description length' :
              'Treats edges as bidirectional' }}
         </span>
       </div>
