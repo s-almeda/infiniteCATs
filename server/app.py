@@ -316,9 +316,17 @@ def get_material_distance_LA(material1: str, material2: str, material3: str) -> 
     embedding1 = np.frombuffer(result1['embedding'], dtype=np.float32)
     embedding2 = np.frombuffer(result2['embedding'], dtype=np.float32)
     embedding3 = np.frombuffer(result3['embedding'], dtype=np.float32)
-    ab = float(np.linalg.norm(embedding1 - embedding2))
-    ac = float(np.linalg.norm(embedding1 - embedding3))
-    bc = float(np.linalg.norm(embedding2 - embedding3))
+    def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+        dot_product = np.dot(a, b)
+        norm_a = np.linalg.norm(a)
+        norm_b = np.linalg.norm(b)
+        return float(dot_product / (norm_a * norm_b))
+    # ab = float(np.linalg.norm(embedding1 - embedding2))
+    # ac = float(np.linalg.norm(embedding1 - embedding3))
+    # bc = float(np.linalg.norm(embedding2 - embedding3))
+    ab = (1 - cosine_similarity(embedding1, embedding2))/2
+    ac = (1 - cosine_similarity(embedding1, embedding3))/2
+    bc = (1 - cosine_similarity(embedding2, embedding3))/2
     try:
         c = (bc + ac - ab) / 2
         a = ac - c
@@ -479,7 +487,8 @@ def get_nodes_and_edges(username: str | None = None):
             recipe_map[result_name] = (first_word, second_word, per_user_rank)
 
         # Calculate distance between materials and their average
-        distancefrom1, distancefrom2, distanceto = get_material_distance_LA(first_word, second_word, result_name)
+        # distancefrom1, distancefrom2, distanceto = get_material_distance_LA(first_word, second_word, result_name)
+        distancefrom1, distancefrom2, distanceto = (1,1,1)  # placeholder values for now
 
         edges.append({
             'from1': first_word,

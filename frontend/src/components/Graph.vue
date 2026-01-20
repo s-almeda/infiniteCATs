@@ -37,6 +37,8 @@ const renderMode = ref('Combination Nodes');
 const currentLabelHighlight = ref(null);
 const selectedCommunities = ref(new Set());
 const colorMode = ref('communities'); // 'communities' or 'users'
+const communityAlgorithm = ref('undirected'); // 'undirected' or 'directed'
+const minCommunitySize = ref(1); // Minimum community size for Community Graph view
 const selectedUsers = ref(new Set());
 let userAssignments = {}; // nodeId -> username (first discoverer)
 let userColors = {}; // nodeId -> color string
@@ -617,6 +619,36 @@ function onCommunityToggle(commId, checked) {
   }
 }
 
+async function recomputeCommunities() {
+  // Recompute communities based on the selected algorithm
+  if (communityAlgorithm.value === 'directed') {
+    communityAssignments = computeCommunitiesDirected(allNodes, originalLinks, COMMUNITY_PARAMS);
+  } else if (communityAlgorithm.value === 'in-degree') {
+    communityAssignments = computeCommunitiesInDegreeOnly(allNodes, originalLinks, COMMUNITY_PARAMS);
+  } else if (communityAlgorithm.value === 'out-degree') {
+    communityAssignments = computeCommunitiesOutDegreeOnly(allNodes, originalLinks, COMMUNITY_PARAMS);
+  } else {
+    communityAssignments = computeCommunities(allNodes, originalLinks, COMMUNITY_PARAMS);
+  }
+  communityColors = assignCommunityColors(communityAssignments);
+  communitySummaries.value = buildCommunitySummaries(communityAssignments, communityColors, allNodes, originalLinks);
+  
+  // Compute global graph centralization
+  const materialNodes = allNodes.filter(n => n && n.type !== "combination" && !n.isConnector);
+  globalCentralization.value = computeFreemanCentralization(materialNodes, originalLinks, {}, null);
+  
+  // Fetch embedding statistics for communities
+  await fetchCommunityEmbeddingStats(communityAssignments);
+  
+  // Clear community selection since community IDs may have changed
+  selectedCommunities.value = new Set();
+  
+  // Redraw the graph with new colors
+  if (expandedNodes.length > 0 && expandedLinks.length > 0) {
+    draw(expandedNodes, expandedLinks);
+  }
+}
+
 function computeCommunities(nodes, links, params = COMMUNITY_PARAMS) {
   // Louvain-style modularity heuristic on an undirected, unweighted graph derived from links
   const nodeIds = nodes.map(n => n.id);
@@ -703,6 +735,382 @@ function computeCommunities(nodes, links, params = COMMUNITY_PARAMS) {
       communityConnections.forEach((k_i_in, comm) => {
         const tot = communityWeight.get(comm) || 0;
         const gamma = params.gamma ?? 1.0;
+        const gain = k_i_in - gamma * (k_i * tot) / m2;
+        if (gain > bestGain) {
+          bestGain = gain;
+          bestComm = comm;
+        }
+      });
+
+      // Restore weight to chosen community
+      communityWeight.set(bestComm, (communityWeight.get(bestComm) || 0) + k_i);
+
+      const minGain = params.minGain ?? 0;
+      if (bestComm !== currentComm && bestGain > minGain) {
+        community.set(id, bestComm);
+        moved = true;
+      }
+    });
+  }
+
+  const assignment = {};
+  nodeIds.forEach(id => { assignment[id] = community.get(id); });
+  return assignment;
+}
+
+function computeCommunitiesDirected(nodes, links, params = COMMUNITY_PARAMS) {
+  // Louvain-style modularity heuristic on a DIRECTED, unweighted graph derived from links
+  // Uses directed modularity: Q = (1/m) * sum[ A_ij - (k_out_i * k_in_j) / m ] * delta(c_i, c_j)
+  const nodeIds = nodes.map(n => n.id);
+  const outAdj = new Map(); // id -> Map(neighborId -> weight) for outgoing edges
+  const inAdj = new Map();  // id -> Map(neighborId -> weight) for incoming edges
+
+  const addDirectedEdge = (from, to) => {
+    if (!from || !to) return;
+    if (!outAdj.has(from)) outAdj.set(from, new Map());
+    if (!inAdj.has(to)) inAdj.set(to, new Map());
+    const outMap = outAdj.get(from);
+    outMap.set(to, (outMap.get(to) || 0) + 1);
+    const inMap = inAdj.get(to);
+    inMap.set(from, (inMap.get(from) || 0) + 1);
+  };
+
+  // Build directed edges from combination links: from1->to and from2->to
+  links.forEach(l => {
+    let added = false;
+    if (l.from1 && l.to) {
+      addDirectedEdge(l.from1, l.to);
+      added = true;
+    }
+    if (l.from2 && l.to) {
+      addDirectedEdge(l.from2, l.to);
+      added = true;
+    }
+    if (!added) {
+      const a = l.source?.id ?? l.source;
+      const b = l.target?.id ?? l.target ?? l.to;
+      addDirectedEdge(a, b);
+    }
+  });
+
+  // Compute in-degrees and out-degrees
+  const outDegrees = new Map();
+  const inDegrees = new Map();
+  let m = 0; // total number of edges
+  
+  nodeIds.forEach(id => {
+    let outDeg = 0;
+    let inDeg = 0;
+    if (outAdj.has(id)) {
+      outAdj.get(id).forEach(w => { outDeg += w; });
+    }
+    if (inAdj.has(id)) {
+      inAdj.get(id).forEach(w => { inDeg += w; });
+    }
+    outDegrees.set(id, outDeg);
+    inDegrees.set(id, inDeg);
+    m += outDeg; // count total edges
+  });
+
+  if (m === 0) {
+    // No edges: each node its own community
+    const assignment = {};
+    nodeIds.forEach((id, idx) => { assignment[id] = idx; });
+    return assignment;
+  }
+
+  // Initial communities
+  let community = new Map(); // nodeId -> communityId
+  // Track sum of in-degrees and out-degrees per community
+  let commInDeg = new Map(); // communityId -> sum of in-degrees
+  let commOutDeg = new Map(); // communityId -> sum of out-degrees
+  
+  nodeIds.forEach(id => {
+    community.set(id, id);
+    commInDeg.set(id, inDegrees.get(id) || 0);
+    commOutDeg.set(id, outDegrees.get(id) || 0);
+  });
+
+  let moved = true;
+  const maxPasses = params.maxPasses ?? 10;
+  let pass = 0;
+  
+  while (moved && pass < maxPasses) {
+    moved = false;
+    pass++;
+    
+    nodeIds.forEach(id => {
+      const currentComm = community.get(id);
+      const k_out_i = outDegrees.get(id) || 0;
+      const k_in_i = inDegrees.get(id) || 0;
+
+      // Remove node from current community
+      commOutDeg.set(currentComm, (commOutDeg.get(currentComm) || 0) - k_out_i);
+      commInDeg.set(currentComm, (commInDeg.get(currentComm) || 0) - k_in_i);
+
+      // Compute connections to/from neighbor communities
+      // For directed modularity, we need both incoming and outgoing edges
+      const communityConnections = new Map(); // commId -> { inEdges, outEdges }
+      
+      // Outgoing edges from this node
+      if (outAdj.has(id)) {
+        outAdj.get(id).forEach((w, nb) => {
+          const commNb = community.get(nb);
+          if (!communityConnections.has(commNb)) {
+            communityConnections.set(commNb, { inEdges: 0, outEdges: 0 });
+          }
+          communityConnections.get(commNb).outEdges += w;
+        });
+      }
+      
+      // Incoming edges to this node
+      if (inAdj.has(id)) {
+        inAdj.get(id).forEach((w, nb) => {
+          const commNb = community.get(nb);
+          if (!communityConnections.has(commNb)) {
+            communityConnections.set(commNb, { inEdges: 0, outEdges: 0 });
+          }
+          communityConnections.get(commNb).inEdges += w;
+        });
+      }
+
+      let bestComm = currentComm;
+      let bestGain = 0;
+      const gamma = params.gamma ?? 1.0;
+      
+      communityConnections.forEach((conn, comm) => {
+        const totIn = commInDeg.get(comm) || 0;
+        const totOut = commOutDeg.get(comm) || 0;
+        
+        // Directed modularity gain:
+        // delta_Q = (1/m) * [ (edges from i to C) + (edges from C to i) - gamma * (k_out_i * tot_in_C + k_in_i * tot_out_C) / m ]
+        const edgesToComm = conn.outEdges;
+        const edgesFromComm = conn.inEdges;
+        const nullModelTerm = gamma * (k_out_i * totIn + k_in_i * totOut) / m;
+        const gain = (edgesToComm + edgesFromComm) - nullModelTerm;
+        
+        if (gain > bestGain) {
+          bestGain = gain;
+          bestComm = comm;
+        }
+      });
+
+      // Add node to best community
+      commOutDeg.set(bestComm, (commOutDeg.get(bestComm) || 0) + k_out_i);
+      commInDeg.set(bestComm, (commInDeg.get(bestComm) || 0) + k_in_i);
+
+      const minGain = params.minGain ?? 0;
+      if (bestComm !== currentComm && bestGain > minGain) {
+        community.set(id, bestComm);
+        moved = true;
+      }
+    });
+  }
+
+  const assignment = {};
+  nodeIds.forEach(id => { assignment[id] = community.get(id); });
+  return assignment;
+}
+
+function computeCommunitiesInDegreeOnly(nodes, links, params = COMMUNITY_PARAMS) {
+  // Louvain-style modularity using ONLY in-degree neighbors (nodes that point TO this node)
+  // This groups nodes by what points to them (shared predecessors)
+  const nodeIds = nodes.map(n => n.id);
+  const inAdj = new Map(); // id -> Map(neighborId -> weight) for incoming edges
+
+  const addDirectedEdge = (from, to) => {
+    if (!from || !to) return;
+    if (!inAdj.has(to)) inAdj.set(to, new Map());
+    const inMap = inAdj.get(to);
+    inMap.set(from, (inMap.get(from) || 0) + 1);
+  };
+
+  // Build directed edges from combination links: from1->to and from2->to
+  links.forEach(l => {
+    let added = false;
+    if (l.from1 && l.to) {
+      addDirectedEdge(l.from1, l.to);
+      added = true;
+    }
+    if (l.from2 && l.to) {
+      addDirectedEdge(l.from2, l.to);
+      added = true;
+    }
+    if (!added) {
+      const a = l.source?.id ?? l.source;
+      const b = l.target?.id ?? l.target ?? l.to;
+      addDirectedEdge(a, b);
+    }
+  });
+
+  // Compute in-degrees only
+  const inDegrees = new Map();
+  let m2 = 0; // sum of all in-degrees (= total edges)
+  
+  nodeIds.forEach(id => {
+    let inDeg = 0;
+    if (inAdj.has(id)) {
+      inAdj.get(id).forEach(w => { inDeg += w; });
+    }
+    inDegrees.set(id, inDeg);
+    m2 += inDeg;
+  });
+
+  if (m2 === 0) {
+    const assignment = {};
+    nodeIds.forEach((id, idx) => { assignment[id] = idx; });
+    return assignment;
+  }
+
+  // Initial communities
+  let community = new Map();
+  let communityWeight = new Map(); // sum of in-degrees per community
+  
+  nodeIds.forEach(id => {
+    community.set(id, id);
+    communityWeight.set(id, inDegrees.get(id) || 0);
+  });
+
+  let moved = true;
+  const maxPasses = params.maxPasses ?? 10;
+  let pass = 0;
+  
+  while (moved && pass < maxPasses) {
+    moved = false;
+    pass++;
+    
+    nodeIds.forEach(id => {
+      const currentComm = community.get(id);
+      const k_i = inDegrees.get(id) || 0;
+      const neighbors = inAdj.get(id) || new Map(); // Only in-neighbors
+
+      // Remove node from current community
+      communityWeight.set(currentComm, (communityWeight.get(currentComm) || 0) - k_i);
+
+      // Compute connections to neighbor communities (via in-edges)
+      const communityConnections = new Map();
+      neighbors.forEach((w, nb) => {
+        const commNb = community.get(nb);
+        communityConnections.set(commNb, (communityConnections.get(commNb) || 0) + w);
+      });
+
+      let bestComm = currentComm;
+      let bestGain = 0;
+      const gamma = params.gamma ?? 1.0;
+      
+      communityConnections.forEach((k_i_in, comm) => {
+        const tot = communityWeight.get(comm) || 0;
+        const gain = k_i_in - gamma * (k_i * tot) / m2;
+        if (gain > bestGain) {
+          bestGain = gain;
+          bestComm = comm;
+        }
+      });
+
+      // Restore weight to chosen community
+      communityWeight.set(bestComm, (communityWeight.get(bestComm) || 0) + k_i);
+
+      const minGain = params.minGain ?? 0;
+      if (bestComm !== currentComm && bestGain > minGain) {
+        community.set(id, bestComm);
+        moved = true;
+      }
+    });
+  }
+
+  const assignment = {};
+  nodeIds.forEach(id => { assignment[id] = community.get(id); });
+  return assignment;
+}
+
+function computeCommunitiesOutDegreeOnly(nodes, links, params = COMMUNITY_PARAMS) {
+  // Louvain-style modularity using ONLY out-degree neighbors (nodes this node points TO)
+  // This groups nodes by what they produce (shared successors)
+  const nodeIds = nodes.map(n => n.id);
+  const outAdj = new Map(); // id -> Map(neighborId -> weight) for outgoing edges
+
+  const addDirectedEdge = (from, to) => {
+    if (!from || !to) return;
+    if (!outAdj.has(from)) outAdj.set(from, new Map());
+    const outMap = outAdj.get(from);
+    outMap.set(to, (outMap.get(to) || 0) + 1);
+  };
+
+  // Build directed edges from combination links: from1->to and from2->to
+  links.forEach(l => {
+    let added = false;
+    if (l.from1 && l.to) {
+      addDirectedEdge(l.from1, l.to);
+      added = true;
+    }
+    if (l.from2 && l.to) {
+      addDirectedEdge(l.from2, l.to);
+      added = true;
+    }
+    if (!added) {
+      const a = l.source?.id ?? l.source;
+      const b = l.target?.id ?? l.target ?? l.to;
+      addDirectedEdge(a, b);
+    }
+  });
+
+  // Compute out-degrees only
+  const outDegrees = new Map();
+  let m2 = 0; // sum of all out-degrees (= total edges)
+  
+  nodeIds.forEach(id => {
+    let outDeg = 0;
+    if (outAdj.has(id)) {
+      outAdj.get(id).forEach(w => { outDeg += w; });
+    }
+    outDegrees.set(id, outDeg);
+    m2 += outDeg;
+  });
+
+  if (m2 === 0) {
+    const assignment = {};
+    nodeIds.forEach((id, idx) => { assignment[id] = idx; });
+    return assignment;
+  }
+
+  // Initial communities
+  let community = new Map();
+  let communityWeight = new Map(); // sum of out-degrees per community
+  
+  nodeIds.forEach(id => {
+    community.set(id, id);
+    communityWeight.set(id, outDegrees.get(id) || 0);
+  });
+
+  let moved = true;
+  const maxPasses = params.maxPasses ?? 10;
+  let pass = 0;
+  
+  while (moved && pass < maxPasses) {
+    moved = false;
+    pass++;
+    
+    nodeIds.forEach(id => {
+      const currentComm = community.get(id);
+      const k_i = outDegrees.get(id) || 0;
+      const neighbors = outAdj.get(id) || new Map(); // Only out-neighbors
+
+      // Remove node from current community
+      communityWeight.set(currentComm, (communityWeight.get(currentComm) || 0) - k_i);
+
+      // Compute connections to neighbor communities (via out-edges)
+      const communityConnections = new Map();
+      neighbors.forEach((w, nb) => {
+        const commNb = community.get(nb);
+        communityConnections.set(commNb, (communityConnections.get(commNb) || 0) + w);
+      });
+
+      let bestComm = currentComm;
+      let bestGain = 0;
+      const gamma = params.gamma ?? 1.0;
+      
+      communityConnections.forEach((k_i_in, comm) => {
+        const tot = communityWeight.get(comm) || 0;
         const gain = k_i_in - gamma * (k_i * tot) / m2;
         if (gain > bestGain) {
           bestGain = gain;
@@ -883,18 +1291,120 @@ function buildCommunitySummaries(assignments, colors, nodes, links) {
     entry.nodes.push(n);
   });
 
+  // Build a map from result node to its first creation link (chronologically first)
+  // Links are already in chronological order
+  const firstCreationLink = new Map(); // resultId -> { from1, from2, to }
+  links.forEach(link => {
+    const { from1, from2, to } = link;
+    if (!to) return;
+    if (!firstCreationLink.has(to)) {
+      firstCreationLink.set(to, { from1, from2, to });
+    }
+  });
+
+  // Compute directed inter-community edge counts
+  // inDegrees[commA][commB] = count of edges FROM commB TO commA
+  // outDegrees[commA][commB] = count of edges FROM commA TO commB
+  const inDegrees = new Map(); // commId -> Map(sourceCommId -> count)
+  const outDegrees = new Map(); // commId -> Map(targetCommId -> count)
+  
+  // Initialize maps for all communities
+  group.forEach((_, commId) => {
+    inDegrees.set(commId, new Map());
+    outDegrees.set(commId, new Map());
+  });
+  
+  // Count directed edges between communities
+  links.forEach(link => {
+    const { from1, from2, to } = link;
+    if (!from1 || !from2 || !to) return;
+    
+    const comm1 = assignments[from1];
+    const comm2 = assignments[from2];
+    const commTo = assignments[to];
+    
+    const countDirectedEdge = (fromComm, toComm) => {
+      if (fromComm === undefined || toComm === undefined || fromComm === toComm) return;
+      if (!group.has(fromComm) || !group.has(toComm)) return;
+      
+      // outDegrees: fromComm -> toComm
+      const outMap = outDegrees.get(fromComm);
+      if (outMap) outMap.set(toComm, (outMap.get(toComm) || 0) + 1);
+      
+      // inDegrees: toComm <- fromComm
+      const inMap = inDegrees.get(toComm);
+      if (inMap) inMap.set(fromComm, (inMap.get(fromComm) || 0) + 1);
+    };
+    
+    countDirectedEdge(comm1, commTo);
+    if (comm2 !== comm1) {
+      countDirectedEdge(comm2, commTo);
+    }
+  });
+
   return [...group.entries()].map(([commId, { color, nodes: commNodes }]) => {
     const labels = commNodes.slice(0, 5).map(n => n.label || n.id);
     
     // Compute Freeman Degree Centralization for this community
     const centralization = computeFreemanCentralization(commNodes, links, assignments, commId);
     
+    // Get top 2 source communities (communities that point TO this one - in-degrees)
+    const inMap = inDegrees.get(commId) || new Map();
+    const topSources = [...inMap.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 2)
+      .map(([srcCommId, count]) => ({ id: srcCommId, count }));
+    
+    // Get top 2 sink communities (communities this one points TO - out-degrees)
+    const outMap = outDegrees.get(commId) || new Map();
+    const topSinks = [...outMap.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 2)
+      .map(([tgtCommId, count]) => ({ id: tgtCommId, count }));
+    
+    // Find parent communities: the community of the ingredients that created the first resource
+    // Sort nodes by chronological index (smaller = earlier) to find the first resource
+    const sortedNodes = [...commNodes].sort((a, b) => {
+      const idxA = a.chronoIndex ?? Infinity;
+      const idxB = b.chronoIndex ?? Infinity;
+      return idxA - idxB;
+    });
+    
+    let parentCommunities = [];
+    // Find the first node that was created (has a creation link)
+    for (const node of sortedNodes) {
+      const creationLink = firstCreationLink.get(node.id);
+      if (creationLink) {
+        const { from1, from2 } = creationLink;
+        const parentComm1 = assignments[from1];
+        const parentComm2 = assignments[from2];
+        
+        // Collect unique parent communities (excluding self)
+        const parents = new Set();
+        if (parentComm1 !== undefined && parentComm1 !== commId) parents.add(parentComm1);
+        if (parentComm2 !== undefined && parentComm2 !== commId) parents.add(parentComm2);
+        
+        // Also include self if one of the parents is from the same community
+        if (parentComm1 === commId || parentComm2 === commId) {
+          // One parent is from same community - note this
+          if (parentComm1 !== undefined) parents.add(parentComm1);
+          if (parentComm2 !== undefined) parents.add(parentComm2);
+        }
+        
+        parentCommunities = [...parents];
+        break;
+      }
+    }
+    
     return {
       id: commId,
       color,
       count: commNodes.length,
       labels,
-      centralization
+      centralization,
+      topSources,
+      topSinks,
+      parentCommunities
     };
   }).sort((a, b) => b.count - a.count);
 }
@@ -1779,15 +2289,19 @@ function buildCommunityGraph(activeLinks) {
   const commSummaryMap = new Map();
   communitySummaries.value.forEach(cs => commSummaryMap.set(cs.id, cs));
   
-  // Create a node for each community
+  // Create a node for each community that meets the minimum size threshold
   const commNodeMap = new Map(); // commId -> node
+  const minSize = minCommunitySize.value || 1;
   communitySet.forEach(commId => {
     const summary = commSummaryMap.get(commId);
+    const count = summary?.count ?? 1;
+    // Skip communities smaller than the minimum size
+    if (count < minSize) return;
     const node = {
       id: `comm_${commId}`,
       commId: commId,
       label: `Community ${commId}`,
-      count: summary?.count ?? 1,
+      count: count,
       color: summary?.color ?? '#219ebc',
       examples: summary?.labels?.slice(0, 3).join(', ') ?? '',
       x: Math.random() * width.value,
@@ -1797,8 +2311,9 @@ function buildCommunityGraph(activeLinks) {
     commNodeMap.set(commId, node);
   });
   
-  // Count inter-community links
-  const edgeWeights = new Map(); // "commA_commB" -> count (canonical order)
+  // Count DIRECTED inter-community links
+  // Track from->to and to->from separately
+  const edgeWeights = new Map(); // \"fromComm_toComm\" -> count (directed: source_target)
   
   activeLinks.forEach(link => {
     const { from1, from2, to } = link;
@@ -1808,28 +2323,34 @@ function buildCommunityGraph(activeLinks) {
     const comm2 = communityAssignments[from2];
     const commTo = communityAssignments[to];
     
-    // Count edges between different communities
-    const countEdge = (ca, cb) => {
-      if (ca === undefined || cb === undefined || ca === cb) return;
-      const key = ca < cb ? `${ca}_${cb}` : `${cb}_${ca}`;
+    // Count DIRECTED edges: from ingredient communities TO result community
+    const countDirectedEdge = (fromComm, toComm) => {
+      if (fromComm === undefined || toComm === undefined || fromComm === toComm) return;
+      // Only count if both communities are in our filtered set
+      if (!commNodeMap.has(fromComm) || !commNodeMap.has(toComm)) return;
+      const key = `${fromComm}_${toComm}`;
       edgeWeights.set(key, (edgeWeights.get(key) || 0) + 1);
     };
     
-    countEdge(comm1, commTo);
-    countEdge(comm2, commTo);
-    countEdge(comm1, comm2);
+    // from1 -> to and from2 -> to (ingredients point to result)
+    // But only count each unique source community once per link
+    countDirectedEdge(comm1, commTo);
+    if (comm2 !== comm1) {
+      countDirectedEdge(comm2, commTo);
+    }
   });
   
-  // Create edges between communities
+  // Create directed edges between communities
   edgeWeights.forEach((weight, key) => {
-    const [commA, commB] = key.split('_');
-    const nodeA = commNodeMap.get(commA);
-    const nodeB = commNodeMap.get(commB);
-    if (nodeA && nodeB) {
+    const [fromComm, toComm] = key.split('_');
+    const nodeFrom = commNodeMap.get(fromComm);
+    const nodeTo = commNodeMap.get(toComm);
+    if (nodeFrom && nodeTo) {
       expandedLinks.push({
-        source: nodeA,
-        target: nodeB,
-        weight: weight
+        source: nodeFrom,
+        target: nodeTo,
+        weight: weight,
+        isDirected: true
       });
     }
   });
@@ -1841,22 +2362,12 @@ function buildCommunityGraph(activeLinks) {
     simulation.stop();
   }
   
-  // Find max weight for scaling
-  const maxWeight = Math.max(1, ...expandedLinks.map(l => l.weight));
-  
   simulation = forceSimulation(expandedNodes)
     .force("link",
       forceLink(expandedLinks)
         .id(d => d.id)
-        .distance(l => {
-          // Stronger connections (more links) = shorter distance
-          const normalizedWeight = l.weight / maxWeight;
-          return 200 - normalizedWeight * 150; // Range: 50-200
-        })
-        .strength(l => {
-          const normalizedWeight = l.weight / maxWeight;
-          return 0.3 + normalizedWeight * 0.7; // Range: 0.3-1.0
-        })
+        .distance(150) // Constant distance
+        .strength(0.5) // Constant strength
     )
     .force("charge", forceManyBody().strength(-500))
     .force("center", forceCenter(width.value / 2, height.value / 2));
@@ -1876,36 +2387,121 @@ function drawCommunityGraph(nodes, links) {
   ctx.scale(zoomLevel.value, zoomLevel.value);
   ctx.translate(-width.value / 2, -height.value / 2);
   
-  // Find max weight and max count for scaling
-  const maxWeight = Math.max(1, ...links.map(l => l.weight));
+  // Find max count for scaling node sizes, max weight for scaling edge widths
   const maxCount = Math.max(1, ...nodes.map(n => n.count));
+  const maxWeight = Math.max(1, ...links.map(l => l.weight));
   
-  // Draw edges with thickness proportional to weight
+  // Helper to compute node radius
+  const getNodeRadius = (node) => (node.count / maxCount) * 55;
+  
+  // Build a set of reverse edges to detect bidirectional pairs
+  // Key: "srcId_tgtId" -> true if reverse edge exists
+  const reverseEdgeExists = new Set();
+  links.forEach(link => {
+    const srcId = link.source.id || link.source;
+    const tgtId = link.target.id || link.target;
+    // Check if the reverse direction exists
+    const reverseKey = `${tgtId}_${srcId}`;
+    reverseEdgeExists.add(`${srcId}_${tgtId}`);
+  });
+  
+  // Draw curved directed edges with arrowheads
   links.forEach(link => {
     const normalizedWeight = link.weight / maxWeight;
-    const lineWidth = 1 + normalizedWeight * 12; // Range: 1-13px
+    const lineWidth = 1 + normalizedWeight * 8; // Range: 1-9px
     
+    const srcX = link.source.x;
+    const srcY = link.source.y;
+    const tgtX = link.target.x;
+    const tgtY = link.target.y;
+    
+    // Check if there's a reverse edge (bidirectional connection)
+    const srcId = link.source.id || link.source;
+    const tgtId = link.target.id || link.target;
+    const reverseKey = `${tgtId}_${srcId}`;
+    const hasBidirectional = reverseEdgeExists.has(reverseKey);
+    
+    // Curve direction: always curve "to the right" relative to the edge direction
+    // This means A->B curves one way, B->A curves the opposite way naturally
+    let curveDirection = 0;
+    if (hasBidirectional) {
+      // Always curve to the right of the direction of travel (clockwise)
+      curveDirection = 1;
+    }
+    
+    // Calculate curve control point
+    const midX = (srcX + tgtX) / 2;
+    const midY = (srcY + tgtY) / 2;
+    
+    // Perpendicular offset for the curve
+    const dx = tgtX - srcX;
+    const dy = tgtY - srcY;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const curveMagnitude = hasBidirectional ? Math.min(50, dist * 0.3) : 0;
+    
+    // Perpendicular vector (normalized)
+    const perpX = -dy / (dist || 1);
+    const perpY = dx / (dist || 1);
+    
+    // Control point
+    const ctrlX = midX + perpX * curveMagnitude * curveDirection;
+    const ctrlY = midY + perpY * curveMagnitude * curveDirection;
+    
+    // Get target node radius to stop arrow before the node
+    const targetRadius = getNodeRadius(link.target);
+    const sourceRadius = getNodeRadius(link.source);
+    
+    // Calculate where the curve meets the target node edge
+    // For a quadratic bezier, we need to find the point at parameter t where it hits the node
+    // Approximate by finding the angle from control point to target
+    const angleToTarget = Math.atan2(tgtY - ctrlY, tgtX - ctrlX);
+    const arrowEndX = tgtX - Math.cos(angleToTarget) * (targetRadius + 5);
+    const arrowEndY = tgtY - Math.sin(angleToTarget) * (targetRadius + 5);
+    
+    // Start point offset from source node
+    const angleFromSource = Math.atan2(ctrlY - srcY, ctrlX - srcX);
+    const arrowStartX = srcX + Math.cos(angleFromSource) * (sourceRadius + 2);
+    const arrowStartY = srcY + Math.sin(angleFromSource) * (sourceRadius + 2);
+    
+    // Draw curved line
     ctx.beginPath();
-    ctx.strokeStyle = `rgba(100, 100, 100, ${0.3 + normalizedWeight * 0.5})`;
+    ctx.strokeStyle = `rgba(100, 100, 100, ${0.4 + normalizedWeight * 0.4})`;
     ctx.lineWidth = lineWidth;
-    ctx.moveTo(link.source.x, link.source.y);
-    ctx.lineTo(link.target.x, link.target.y);
+    ctx.moveTo(arrowStartX, arrowStartY);
+    ctx.quadraticCurveTo(ctrlX, ctrlY, arrowEndX, arrowEndY);
     ctx.stroke();
     
-    // Draw weight label at midpoint
-    const midX = (link.source.x + link.target.x) / 2;
-    const midY = (link.source.y + link.target.y) / 2;
+    // Draw arrowhead
+    const arrowSize = 6 + lineWidth;
+    const arrowAngle = Math.atan2(arrowEndY - ctrlY, arrowEndX - ctrlX);
+    
+    ctx.beginPath();
+    ctx.fillStyle = `rgba(100, 100, 100, ${0.5 + normalizedWeight * 0.4})`;
+    ctx.moveTo(arrowEndX, arrowEndY);
+    ctx.lineTo(
+      arrowEndX - arrowSize * Math.cos(arrowAngle - Math.PI / 6),
+      arrowEndY - arrowSize * Math.sin(arrowAngle - Math.PI / 6)
+    );
+    ctx.lineTo(
+      arrowEndX - arrowSize * Math.cos(arrowAngle + Math.PI / 6),
+      arrowEndY - arrowSize * Math.sin(arrowAngle + Math.PI / 6)
+    );
+    ctx.closePath();
+    ctx.fill();
+    
+    // Draw weight label near the curve midpoint (offset slightly)
+    const labelX = ctrlX;
+    const labelY = ctrlY;
     ctx.fillStyle = '#333';
     ctx.font = '10px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(link.weight.toString(), midX, midY);
+    ctx.fillText(link.weight.toString(), labelX, labelY);
   });
   
   // Draw nodes with size proportional to community size
   nodes.forEach(node => {
-    const normalizedCount = node.count / maxCount;
-    const radius = normalizedCount * 55; // Range: 0-55px, no minimum
+    const radius = getNodeRadius(node);
     
     // Draw node circle
     ctx.beginPath();
@@ -2173,17 +2769,8 @@ async function loadGraphData() {
     originalLinks = links;
     allNodes = nodes;
     
-    // Compute communities and assign colors (Louvain-style heuristic)
-    communityAssignments = computeCommunities(allNodes, originalLinks, COMMUNITY_PARAMS);
-    communityColors = assignCommunityColors(communityAssignments);
-    communitySummaries.value = buildCommunitySummaries(communityAssignments, communityColors, allNodes, originalLinks);
-    
-    // Compute global graph centralization
-    const materialNodes = allNodes.filter(n => n && n.type !== "combination" && !n.isConnector);
-    globalCentralization.value = computeFreemanCentralization(materialNodes, originalLinks, {}, null);
-    
-    // Fetch embedding statistics for communities
-    await fetchCommunityEmbeddingStats(communityAssignments);
+    // Compute communities and assign colors based on selected algorithm
+    await recomputeCommunities();
     
     // Compute user assignments (for global graph coloring by user)
     if (!isLoggedIn.value) {
@@ -2274,6 +2861,22 @@ watch(colorMode, () => {
   }
 });
 
+// Recompute communities when algorithm changes
+watch(communityAlgorithm, async () => {
+  console.log(`Community algorithm changed to ${communityAlgorithm.value}`);
+  if (allNodes.length > 0 && originalLinks.length > 0) {
+    await recomputeCommunities();
+  }
+});
+
+// Rebuild community graph when minimum size filter changes
+watch(minCommunitySize, () => {
+  if (renderMode.value === 'Community' && originalLinks.length > 0) {
+    console.log(`Min community size changed to ${minCommunitySize.value}`);
+    rebuildGraphForTimeline(true);
+  }
+});
+
 // Redraw discovery chart when communities change
 watch(communitySummaries, () => {
   drawCommunityDiscoveryChart();
@@ -2323,6 +2926,17 @@ onBeforeUnmount(() => {
             <option value="Community">Community Graph</option>
           </select>
         </div>
+        <div v-if="renderMode === 'Community'" class="flex items-center gap-3 mb-3">
+          <label class="text-sm font-medium whitespace-nowrap">Min Community Size:</label>
+          <input 
+            type="number" 
+            v-model.number="minCommunitySize" 
+            min="1" 
+            step="1"
+            class="w-20 text-sm border border-gray-300 rounded px-2 py-1"
+          />
+          <span class="text-xs text-gray-500">Only show communities with at least this many nodes</span>
+        </div>
         <div class="flex items-center gap-3 mb-3">
           <button
             @click="clearHighlights"
@@ -2361,6 +2975,25 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
+    <!-- Community Algorithm Selection -->
+    <div class="w-full max-w-4xl border border-gray-200 rounded-md p-3 bg-white shadow-sm">
+      <div class="flex items-center gap-3">
+        <label class="text-sm font-medium whitespace-nowrap">Community Algorithm:</label>
+        <select v-model="communityAlgorithm" class="text-sm border border-gray-300 rounded px-2 py-1">
+          <option value="undirected">Louvain (Undirected)</option>
+          <option value="directed">Louvain (Directed)</option>
+          <option value="in-degree">Louvain (In-Degree Only)</option>
+          <option value="out-degree">Louvain (Out-Degree Only)</option>
+        </select>
+        <span class="text-xs text-gray-500">
+          {{ communityAlgorithm === 'directed' ? 'Considers edge direction (A→B ≠ B→A)' : 
+             communityAlgorithm === 'in-degree' ? 'Groups by shared predecessors (what points to them)' :
+             communityAlgorithm === 'out-degree' ? 'Groups by shared successors (what they produce)' :
+             'Treats edges as bidirectional' }}
+        </span>
+      </div>
+    </div>
+
     <!-- Communities List (shown when colorMode is communities or user is logged in) -->
     <div v-if="colorMode === 'communities' || isLoggedIn" class="w-full max-w-4xl border border-gray-200 rounded-md p-3 bg-white shadow-sm">
       <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
@@ -2389,6 +3022,15 @@ onBeforeUnmount(() => {
           <span class="text-purple-600 text-xs" :title="'Average Euclidean distance from each node to the community centroid (semantic spread)'">Spread: {{ (comm.avgDistToCentroid ?? 0).toFixed(3) }}</span>
           <span class="text-orange-600 text-xs" :title="'Standard deviation of distances to centroid (uniformity of spread)'">±{{ (comm.stdDistToCentroid ?? 0).toFixed(3) }}</span>
           <span class="text-green-600 text-xs" :title="'Maximum distance to centroid (community radius)'">Radius: {{ (comm.maxDistToCentroid ?? 0).toFixed(3) }}</span>
+          <span v-if="comm.parentCommunities && comm.parentCommunities.length > 0" class="text-amber-600 text-xs" :title="'Parent community: the community of the ingredients that created the first resource in this community'">
+            Parent: {{ comm.parentCommunities.join(', ') }}
+          </span>
+          <span v-if="comm.topSources && comm.topSources.length > 0" class="text-cyan-600 text-xs" :title="'Top communities that feed into this one (in-degree sources)'">
+            ← From: {{ comm.topSources.map(s => `${s.id}(${s.count})`).join(', ') }}
+          </span>
+          <span v-if="comm.topSinks && comm.topSinks.length > 0" class="text-pink-600 text-xs" :title="'Top communities this one feeds into (out-degree sinks)'">
+            → To: {{ comm.topSinks.map(s => `${s.id}(${s.count})`).join(', ') }}
+          </span>
           <span class="text-gray-700 text-xs">Examples: {{ comm.labels.join(', ') }}</span>
         </div>
       </div>
