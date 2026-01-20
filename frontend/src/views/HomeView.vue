@@ -6,12 +6,14 @@ import AvaliableResources from "@/components/AvailableResources.vue";
 import Container from "@/components/Container.vue";
 import Graph from "@/components/Graph.vue";
 import WelcomeModal from "@/components/WelcomeModal.vue";
-import { computed, onMounted } from "vue";
+import RadialGraph from "@/components/RadialGraph.vue";
+import { computed, onMounted, ref } from "vue";
 import { useUserStore } from "@/stores/useUserStore";
 import { useResourcesStore } from "@/stores/useResourcesStore";
 
 const urlParams = new URLSearchParams(window.location.search);
 const showGraph = computed(() => urlParams.get('graph') === 'true');
+const showRadial = computed(() => urlParams.get('radial') === 'true');
 
 const userStore = useUserStore();
 const resourcesStore = useResourcesStore();
@@ -26,5 +28,6 @@ onMounted(async () => {
 <template>
   <WelcomeModal></WelcomeModal>
   <Example></Example>
+  <RadialGraph v-if="showRadial"></RadialGraph>
   <Graph v-if="showGraph"></Graph>
 </template>
