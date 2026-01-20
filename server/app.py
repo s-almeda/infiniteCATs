@@ -316,12 +316,12 @@ def get_material_distance_LA(material1: str, material2: str, material3: str) -> 
     embedding1 = np.frombuffer(result1['embedding'], dtype=np.float32)
     embedding2 = np.frombuffer(result2['embedding'], dtype=np.float32)
     embedding3 = np.frombuffer(result3['embedding'], dtype=np.float32)
-    # ab = (1 - cosine_similarity(embedding1, embedding2))/2
-    # ac = (1 - cosine_similarity(embedding1, embedding3))/2
-    # bc = (1 - cosine_similarity(embedding2, embedding3))/2
-    ab = float(np.linalg.norm(embedding1 - embedding2))
-    ac = float(np.linalg.norm(embedding1 - embedding3))
-    bc = float(np.linalg.norm(embedding2 - embedding3))
+    ab = (1 - cosine_similarity(embedding1, embedding2))/2
+    ac = (1 - cosine_similarity(embedding1, embedding3))/2
+    bc = (1 - cosine_similarity(embedding2, embedding3))/2
+    # ab = float(np.linalg.norm(embedding1 - embedding2))
+    # ac = float(np.linalg.norm(embedding1 - embedding3))
+    # bc = float(np.linalg.norm(embedding2 - embedding3))
     try:
         c = (bc + ac - ab) / 2
         a = ac - c
