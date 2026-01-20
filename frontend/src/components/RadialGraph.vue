@@ -7,8 +7,8 @@ import {
   computeCommunities,
   assignCommunityColors,
   buildCommunitySummaries,
-  fetchGraphData,
-  addCraftTimesToNodes
+  fetchUserGraphData,
+  fetchUserDistanceMatrix
 } from "@/utils/communities";
 
 
@@ -38,86 +38,40 @@ const error = ref(null);
 
 let allNodes = [];
 let allLinks = [];
+let distanceMatrix = new Map(); // Full distance matrix from API
 let positionedNodes = [];
 let communityAssignments = {};
 let communityColors = {};
 const communitySummaries = ref([]);
 
-// Expand nodes so each user-discovery is a separate node
-function expandNodesByUser(nodes) {
-  const expanded = [];
-
-  nodes.forEach(node => {
-    if (node.isBaseMaterial || node.craftTimes === null) {
-      // Base materials appear once at center
-      expanded.push({
-        ...node,
-        craftTime: -1,
-        discoveredBy: null
-      });
-    } else if (Object.keys(node.craftTimes).length === 0) {
-      // Node exists but hasn't been discovered by anyone - skip it
-      // (This shouldn't happen normally)
-      console.warn(`Node ${node.id} has no craft times, skipping`);
-    } else {
-      // Create a node for each user who discovered this material
-      Object.entries(node.craftTimes).forEach(([username, craftTime]) => {
-        expanded.push({
-          ...node,
-          craftTime,
-          discoveredBy: username
-        });
-      });
-    }
-  });
-
-  console.log(`Expanded ${nodes.length} nodes to ${expanded.length} user-discovery nodes`);
-  return expanded;
-}
-
-// Build a distance matrix from links
-function buildDistanceMatrix(links) {
-  const distances = new Map(); // "nodeA|nodeB" -> distance
-
-  const setDistance = (a, b, dist) => {
-    if (dist === null || dist === undefined || isNaN(dist)) return;
-    const key1 = `${a}|${b}`;
-    const key2 = `${b}|${a}`;
-    // Keep the smallest distance if we see the same pair multiple times
-    if (!distances.has(key1) || distances.get(key1) > dist) {
-      distances.set(key1, dist);
-      distances.set(key2, dist);
-    }
-  };
-
-  links.forEach(link => {
-    const { from1, from2, to, distanceFrom1, distanceFrom2, distanceTo } = link;
-    // distanceFrom1 is distance from from1 to the combination midpoint
-    // distanceFrom2 is distance from from2 to the combination midpoint
-    // distanceTo is distance from the midpoint to the result
-    // We can use these to approximate pairwise distances
-    if (distanceFrom1 !== null && distanceFrom2 !== null) {
-      // Approximate distance between from1 and from2
-      setDistance(from1, from2, distanceFrom1 + distanceFrom2);
-    }
-    if (distanceFrom1 !== null && distanceTo !== null) {
-      setDistance(from1, to, distanceFrom1 + distanceTo);
-    }
-    if (distanceFrom2 !== null && distanceTo !== null) {
-      setDistance(from2, to, distanceFrom2 + distanceTo);
-    }
-  });
-
+// Convert API distance object to Map for fast lookup
+function buildDistanceMatrixFromAPI(apiDistances) {
+  console.log("[RadialGraph] Building distance matrix from API data...");
+  const distances = new Map();
+  
+  let count = 0;
+  for (const [key, dist] of Object.entries(apiDistances)) {
+    // API returns "A|B" format, we need both directions
+    distances.set(key, dist);
+    // Also add reverse direction
+    const [a, b] = key.split('|');
+    distances.set(`${b}|${a}`, dist);
+    count++;
+  }
+  
+  console.log(`[RadialGraph] Distance matrix built: ${count} pairs (${distances.size} entries with both directions)`);
   return distances;
 }
 
 // Order nodes on a ring by similarity using nearest-neighbor greedy algorithm
-function orderNodesBySimilarity(ringNodes, distanceMatrix) {
+function orderNodesBySimilarity(ringNodes, distMatrix) {
   if (ringNodes.length <= 2) return ringNodes;
+
+  console.log(`[RadialGraph] Ordering ${ringNodes.length} nodes by similarity...`);
 
   const getDistance = (a, b) => {
     const key = `${a.id}|${b.id}`;
-    return distanceMatrix.get(key) ?? Infinity;
+    return distMatrix.get(key) ?? Infinity;
   };
 
   const ordered = [];
@@ -128,17 +82,27 @@ function orderNodesBySimilarity(ringNodes, distanceMatrix) {
   ordered.push(current);
   remaining.delete(current);
 
+  let processed = 0;
+  const total = ringNodes.length;
+
   // Greedily pick the nearest unvisited node
   while (remaining.size > 0) {
     let nearest = null;
     let nearestDist = Infinity;
 
+    let nonInf = 0;
     for (const node of remaining) {
       const dist = getDistance(current, node);
+      if (dist < Infinity) nonInf++;
       if (dist < nearestDist) {
         nearestDist = dist;
         nearest = node;
       }
+    }
+
+    processed++;
+    if (processed % 50 === 0 || processed === total - 1) {
+      console.log(`[RadialGraph] Ordering progress: ${processed}/${total} nodes, ${nonInf} non-infinity distances available`);
     }
 
     if (nearest) {
@@ -147,6 +111,7 @@ function orderNodesBySimilarity(ringNodes, distanceMatrix) {
       current = nearest;
     } else {
       // No connected node found, just add remaining nodes
+      console.log(`[RadialGraph] Adding ${remaining.size} unconnected nodes`);
       for (const node of remaining) {
         ordered.push(node);
       }
@@ -154,27 +119,24 @@ function orderNodesBySimilarity(ringNodes, distanceMatrix) {
     }
   }
 
+  console.log(`[RadialGraph] Ordering complete: ${ordered.length} nodes ordered`);
   return ordered;
 }
 
 function layoutRadialGraph(nodes) {
-  // First expand nodes by user
-  const expandedNodes = expandNodesByUser(nodes);
-
-  // Build distance matrix from links
-  const distanceMatrix = buildDistanceMatrix(allLinks);
-
+  console.log(`[RadialGraph] Starting layout for ${nodes.length} nodes...`);
+  
   // Find max craft time (excluding base materials at -1)
-  const craftTimes = expandedNodes.map(n => n.craftTime).filter(t => t >= 0);
+  const craftTimes = nodes.map(n => n.craftTime).filter(t => t >= 0);
   const maxCraftTime = Math.max(...craftTimes, 1);
 
   // Calculate max radius
   const maxRadius = Math.min(width.value, height.value) / 2 - 50;
 
-  // Order ALL nodes by similarity as if on one ring
-  const orderedNodes = orderNodesBySimilarity(expandedNodes, distanceMatrix);
+  // Order ALL nodes by similarity using the pre-loaded distance matrix
+  const orderedNodes = orderNodesBySimilarity(nodes, distanceMatrix);
 
-  console.log(`RadialGraph: ${expandedNodes.length} nodes, maxCraftTime=${maxCraftTime}`);
+  console.log(`[RadialGraph] Layout: ${nodes.length} nodes, maxCraftTime=${maxCraftTime}`);
 
   // Position nodes: angle from ordering, radius from craftTime
   const angleStep = (2 * Math.PI) / Math.max(orderedNodes.length, 1);
@@ -189,7 +151,7 @@ function layoutRadialGraph(nodes) {
     node.angle = angle;
   });
 
-  return expandedNodes;
+  return orderedNodes;
 }
 
 function draw() {
@@ -281,8 +243,7 @@ function onMouseMove(event) {
 
   if (hit) {
     const timeStr = hit.craftTime === -1 ? 'Base' : `#${hit.craftTime}`;
-    const userStr = hit.discoveredBy ? ` by ${hit.discoveredBy}` : '';
-    hoverNode.value = `${hit.emoji} ${hit.label} (${timeStr}${userStr})`;
+    hoverNode.value = `${hit.emoji} ${hit.label} (${timeStr})`;
   } else {
     hoverNode.value = null;
   }
@@ -325,22 +286,36 @@ async function loadData() {
   error.value = null;
 
   try {
-    // Fetch everyone's graph data
-    const { nodes, links } = await fetchGraphData(null, false);
-    console.log("RadialGraph: Fetched data", { nodes: nodes.length, links: links.length });
+    // Need a username to fetch user-specific graph
+    if (!username.value) {
+      error.value = 'Please log in to view your discovery graph';
+      loading.value = false;
+      return;
+    }
+
+    console.log(`[RadialGraph] Loading data for user: ${username.value}`);
+
+    // Fetch user-specific graph data and distance matrix in parallel
+    const [graphData, distanceData] = await Promise.all([
+      fetchUserGraphData(username.value),
+      fetchUserDistanceMatrix(username.value)
+    ]);
+
+    const { nodes, links } = graphData;
+    console.log(`[RadialGraph] Fetched user data: ${nodes.length} nodes, ${links.length} links`);
 
     allLinks = links;
-
-    // Add craft times to nodes
-    const nodesWithCraftTimes = addCraftTimesToNodes(nodes, links);
-    console.log("RadialGraph: Nodes with craft times", nodesWithCraftTimes);
+    
+    // Build the distance matrix from API response
+    distanceMatrix = buildDistanceMatrixFromAPI(distanceData.distances);
 
     // Compute communities
-    communityAssignments = computeCommunities(nodesWithCraftTimes, links, COMMUNITY_PARAMS);
+    console.log("[RadialGraph] Computing communities...");
+    communityAssignments = computeCommunities(nodes, links, COMMUNITY_PARAMS);
     communityColors = assignCommunityColors(communityAssignments);
-    communitySummaries.value = buildCommunitySummaries(communityAssignments, communityColors, nodesWithCraftTimes);
+    communitySummaries.value = buildCommunitySummaries(communityAssignments, communityColors, nodes);
 
-    allNodes = nodesWithCraftTimes;
+    allNodes = nodes;
 
     // Layout nodes
     positionedNodes = layoutRadialGraph([...allNodes]);
@@ -351,6 +326,7 @@ async function loadData() {
 
     ctx = canvas.value.getContext("2d");
     draw();
+    console.log("[RadialGraph] Render complete!");
 
   } catch (err) {
     console.error("RadialGraph: Error loading data", err);
@@ -361,6 +337,11 @@ async function loadData() {
 
 watch([zoomLevel, panX, panY], () => {
   draw();
+});
+
+// Reload when username changes
+watch(username, () => {
+  loadData();
 });
 
 onMounted(() => {

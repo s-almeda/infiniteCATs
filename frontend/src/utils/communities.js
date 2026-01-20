@@ -180,6 +180,39 @@ export async function fetchGraphData(username = null, isLoggedIn = false) {
   return res.json();
 }
 
+// Fetch user-specific graph data with craft times pre-computed by the backend
+export async function fetchUserGraphData(username) {
+  const apiUrl = import.meta.env.VITE_FLASK_API_URL || 'http://localhost:3000';
+  
+  if (!username) {
+    throw new Error('Username is required for user graph data');
+  }
+
+  const res = await fetch(`${apiUrl}/api/user-graph?username=${encodeURIComponent(username)}`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch user graph data: ${res.status}`);
+  }
+  return res.json();
+}
+
+// Fetch full pairwise distance matrix for a user's materials
+export async function fetchUserDistanceMatrix(username) {
+  const apiUrl = import.meta.env.VITE_FLASK_API_URL || 'http://localhost:3000';
+  
+  if (!username) {
+    throw new Error('Username is required for distance matrix');
+  }
+
+  console.log(`[DistanceMatrix] Fetching distance matrix for user: ${username}`);
+  const res = await fetch(`${apiUrl}/api/user-distance-matrix?username=${encodeURIComponent(username)}`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch distance matrix: ${res.status}`);
+  }
+  const data = await res.json();
+  console.log(`[DistanceMatrix] Received ${Object.keys(data.distances).length} distances for ${data.materials.length} materials`);
+  return data;
+}
+
 // Compute when each material was first crafted per user
 // Returns a map of nodeId -> { username -> craftIndex }
 export function computeCraftTimes(nodes, links) {

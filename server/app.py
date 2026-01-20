@@ -316,12 +316,12 @@ def get_material_distance_LA(material1: str, material2: str, material3: str) -> 
     embedding1 = np.frombuffer(result1['embedding'], dtype=np.float32)
     embedding2 = np.frombuffer(result2['embedding'], dtype=np.float32)
     embedding3 = np.frombuffer(result3['embedding'], dtype=np.float32)
-    ab = (1 - cosine_similarity(embedding1, embedding2))/2
-    ac = (1 - cosine_similarity(embedding1, embedding3))/2
-    bc = (1 - cosine_similarity(embedding2, embedding3))/2
-    # ab = float(np.linalg.norm(embedding1 - embedding2))
-    # ac = float(np.linalg.norm(embedding1 - embedding3))
-    # bc = float(np.linalg.norm(embedding2 - embedding3))
+    # ab = (1 - cosine_similarity(embedding1, embedding2))/2
+    # ac = (1 - cosine_similarity(embedding1, embedding3))/2
+    # bc = (1 - cosine_similarity(embedding2, embedding3))/2
+    ab = float(np.linalg.norm(embedding1 - embedding2))
+    ac = float(np.linalg.norm(embedding1 - embedding3))
+    bc = float(np.linalg.norm(embedding2 - embedding3))
     try:
         c = (bc + ac - ab) / 2
         a = ac - c
@@ -467,7 +467,7 @@ def get_nodes_and_edges(username: str | None = None):
         second_word = row['secondWord'].title()
         result_name = row['resultName'].title()
         per_user_rank = row['perUserRank']
-        print(f"Processing combination: {first_word} + {second_word} -> {result_name} (rank {per_user_rank})")
+        # print(f"Processing combination: {first_word} + {second_word} -> {result_name} (rank {per_user_rank})")
 
         if first_word not in nodes:
             nodes[first_word] = {'id': first_word, 'label': first_word, 'emoji': get_emoji_by_word(first_word) or '❓'}
@@ -501,6 +501,194 @@ def get_graph_data():
     username = request.args.get('username')
     nodes, edges = get_nodes_and_edges(username)
     return jsonify({'nodes': nodes, 'links': edges})
+
+@app.route('/api/user-graph', methods=['GET'])
+def get_user_graph_data():
+    """
+    Get graph data for a specific user with craft times based on row order.
+    Only includes combinations where the user had both ingredients available.
+    Craft time is simply the position in the filtered results (0-indexed).
+    """
+    username = request.args.get('username')
+    
+    if not username:
+        return jsonify({'error': 'Missing username parameter'}), 400
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Get all combinations for this user ordered by id (chronological)
+    cursor.execute(
+        'SELECT id, firstWord, secondWord, resultName, resultEmoji FROM combinations WHERE username = ? ORDER BY id',
+        (username,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    
+    # Base materials are always available from the start
+    base_materials = {'Fire', 'Water', 'Earth', 'Air'}
+    available_materials = set(base_materials)
+    
+    nodes = {}
+    edges = []
+    
+    # Add base materials as nodes with craftTime = -1 (meaning they're base)
+    for base_mat in base_materials:
+        emoji = get_emoji_by_word(base_mat) or '❓'
+        nodes[base_mat] = {
+            'id': base_mat,
+            'label': base_mat,
+            'emoji': emoji,
+            'craftTime': -1,
+            'isBaseMaterial': True
+        }
+    
+    craft_index = 0
+    
+    for row in rows:
+        first_word = row['firstWord'].title()
+        second_word = row['secondWord'].title()
+        result_name = row['resultName'].title()
+        result_emoji = row['resultEmoji']
+        
+        # Only include this combination if both ingredients were available
+        if first_word in available_materials and second_word in available_materials:
+            # Add ingredient nodes if not already present (shouldn't happen normally)
+            if first_word not in nodes:
+                nodes[first_word] = {
+                    'id': first_word,
+                    'label': first_word,
+                    'emoji': get_emoji_by_word(first_word) or '❓',
+                    'craftTime': -1,
+                    'isBaseMaterial': first_word in base_materials
+                }
+            if second_word not in nodes:
+                nodes[second_word] = {
+                    'id': second_word,
+                    'label': second_word,
+                    'emoji': get_emoji_by_word(second_word) or '❓',
+                    'craftTime': -1,
+                    'isBaseMaterial': second_word in base_materials
+                }
+            
+            # Add result node with craft time = current index
+            # Only set craftTime if this is the first time we're seeing this result
+            if result_name not in nodes:
+                nodes[result_name] = {
+                    'id': result_name,
+                    'label': result_name,
+                    'emoji': result_emoji,
+                    'craftTime': craft_index,
+                    'isBaseMaterial': False
+                }
+                craft_index += 1
+            
+            # Calculate distances
+            dist1, dist2, dist_to = get_material_distance_LA(first_word, second_word, result_name)
+            
+            edges.append({
+                'from1': first_word,
+                'from2': second_word,
+                'to': result_name,
+                'distanceFrom1': dist1,
+                'distanceFrom2': dist2,
+                'distanceTo': dist_to
+            })
+            
+            # Mark result as available for future combinations
+            available_materials.add(result_name)
+    
+    print(f"User graph for {username}: {len(nodes)} nodes, {len(edges)} edges, max craftTime={craft_index-1}")
+    return jsonify({'nodes': list(nodes.values()), 'links': edges})
+
+@app.route('/api/user-distance-matrix', methods=['GET'])
+def get_user_distance_matrix():
+    """
+    Get a full pairwise distance matrix for all materials discovered by a user.
+    Returns distances as a flat object: { "MaterialA|MaterialB": distance, ... }
+    """
+    username = request.args.get('username')
+    
+    if not username:
+        return jsonify({'error': 'Missing username parameter'}), 400
+    
+    print(f"[DistanceMatrix] Starting computation for user: {username}")
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Get all unique materials this user has discovered (from combinations + base materials)
+    cursor.execute(
+        '''SELECT DISTINCT name FROM (
+            SELECT firstWord as name FROM combinations WHERE username = ?
+            UNION SELECT secondWord as name FROM combinations WHERE username = ?
+            UNION SELECT resultName as name FROM combinations WHERE username = ?
+        )''',
+        (username, username, username)
+    )
+    material_names = [row['name'].title() for row in cursor.fetchall()]
+    
+    # Add base materials
+    base_materials = ['Fire', 'Water', 'Earth', 'Air']
+    for base in base_materials:
+        if base not in material_names:
+            material_names.append(base)
+    
+    print(f"[DistanceMatrix] Found {len(material_names)} materials for user {username}")
+    
+    # Fetch all embeddings in one query
+    placeholders = ','.join(['?'] * len(material_names))
+    cursor.execute(f'SELECT name, embedding FROM materials WHERE name IN ({placeholders})', material_names)
+    rows = cursor.fetchall()
+    conn.close()
+    
+    # Build embedding dict
+    embeddings = {}
+    for row in rows:
+        name = row['name']
+        if row['embedding']:
+            embeddings[name] = np.frombuffer(row['embedding'], dtype=np.float32)
+    
+    print(f"[DistanceMatrix] Loaded {len(embeddings)} embeddings")
+    
+    # Compute pairwise distances
+    material_list = list(embeddings.keys())
+    n = len(material_list)
+    total_pairs = n * (n - 1) // 2
+    
+    distances = {}
+    computed = 0
+    last_percent = 0
+    
+    for i in range(n):
+        for j in range(i + 1, n):
+            mat_a = material_list[i]
+            mat_b = material_list[j]
+            
+            emb_a = embeddings[mat_a]
+            emb_b = embeddings[mat_b]
+            
+            # Cosine similarity (1 = identical, 0 = orthogonal)
+            dot_product = np.dot(emb_a, emb_b)
+            norm_a = np.linalg.norm(emb_a)
+            norm_b = np.linalg.norm(emb_b)
+            similarity = float(dot_product / (norm_a * norm_b))
+            
+            # Convert to distance (0 = identical, 1 = orthogonal)
+            distance = 1.0 - similarity
+            
+            # Store both directions
+            key = f"{mat_a}|{mat_b}"
+            distances[key] = distance
+            
+            computed += 1
+            percent = int(100 * computed / total_pairs)
+            if percent >= last_percent + 10:
+                print(f"[DistanceMatrix] Progress: {percent}% ({computed}/{total_pairs} pairs)")
+                last_percent = percent
+    
+    print(f"[DistanceMatrix] Completed: {len(distances)} distances computed for {n} materials")
+    return jsonify({'distances': distances, 'materials': material_list})
 
 @app.route('/', methods=['GET'])
 def get_available_materials():
