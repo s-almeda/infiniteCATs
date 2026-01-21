@@ -487,8 +487,8 @@ def get_nodes_and_edges(username: str | None = None):
             recipe_map[result_name] = (first_word, second_word, per_user_rank)
 
         # Calculate distance between materials and their average
-        # distancefrom1, distancefrom2, distanceto = get_material_distance_LA(first_word, second_word, result_name)
-        distancefrom1, distancefrom2, distanceto = (1,1,1)  # placeholder values for now
+        distancefrom1, distancefrom2, distanceto = get_material_distance_LA(first_word, second_word, result_name)
+        # distancefrom1, distancefrom2, distanceto = (1,1,1)  # placeholder values for now
 
         edges.append({
             'from1': first_word,
