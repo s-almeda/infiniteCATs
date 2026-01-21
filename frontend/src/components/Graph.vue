@@ -536,9 +536,9 @@ function draw(nodes, links) {
     // Choose color based on colorMode
     let color;
     if (colorMode.value === 'users' && !isLoggedIn.value) {
-      color = (!n.isConnector && userColors[n.id]) ? userColors[n.id] : (n.type === "combination" ? "#ffb703" : "#219ebc");
+      color = (!n.isConnector && userColors[n.id]) ? userColors[n.id] : (n.type === "combination" ? "#999999" : "#219ebc");
     } else {
-      color = (!n.isConnector && communityColors[n.id]) ? communityColors[n.id] : (n.type === "combination" ? "#ffb703" : "#219ebc");
+      color = (!n.isConnector && communityColors[n.id]) ? communityColors[n.id] : (n.type === "combination" ? "#999999" : "#219ebc");
     }
     
     // Apply timeline brightness to node color
