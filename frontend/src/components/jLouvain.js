@@ -332,12 +332,13 @@ function partition_at_level(dendogram, level) {
 
 function generate_dendogram(graph, part_init) {
 	if (graph.edges.length === 0) {
+		// No edges: each node is its own community with numeric IDs
 		const part = {};
-		graph.nodes.forEach(function(node) {
-			part[node] = node;
+		graph.nodes.forEach(function(node, i) {
+			part[node] = i;  // Use numeric community IDs
 		});
 
-		return part;
+		return [part];  // Return as array (dendogram format)
 	}
 
 	const status = {};

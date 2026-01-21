@@ -61,6 +61,7 @@ let communityColors = {}; // nodeId -> color string
 const communitySummaries = ref([]);
 const globalCentralization = ref(0);
 const globalInterCommunityDistance = ref(0);
+const communityModularity = ref(0);
 const avgCommunitySpread = computed(() => {
   const spreads = communitySummaries.value
     .filter(c => c.count >= 2 && c.avgDistToCentroid !== undefined)
@@ -638,6 +639,9 @@ async function recomputeCommunities() {
   communityColors = assignCommunityColors(communityAssignments);
   communitySummaries.value = buildCommunitySummaries(communityAssignments, communityColors, allNodes, originalLinks);
   
+  // Compute modularity score for the partition
+  communityModularity.value = computeModularity(communityAssignments, allNodes, originalLinks);
+  
   // Compute global graph centralization
   const materialNodes = allNodes.filter(n => n && n.type !== "combination" && !n.isConnector);
   globalCentralization.value = computeFreemanCentralization(materialNodes, originalLinks, {}, null);
@@ -887,6 +891,80 @@ function computeCommunities(nodes, links, params = COMMUNITY_PARAMS) {
     assignment[id] = commRemap.get(nodeToComm.get(id));
   });
   return assignment;
+}
+
+function computeModularity(assignments, nodes, links) {
+  // Compute modularity Q for a given partition
+  // Q = (1/2m) * sum_ij [ A_ij - (k_i * k_j) / 2m ] * delta(c_i, c_j)
+  // Simplified: Q = sum_c [ e_c - a_c^2 ]
+  // where e_c = fraction of edges within community c
+  //       a_c = fraction of edge endpoints in community c
+  
+  const adjacency = new Map(); // id -> Map(neighborId -> weight)
+  
+  // Build undirected adjacency from links
+  links.forEach(l => {
+    const addEdge = (a, b) => {
+      if (!a || !b) return;
+      if (!adjacency.has(a)) adjacency.set(a, new Map());
+      if (!adjacency.has(b)) adjacency.set(b, new Map());
+      adjacency.get(a).set(b, (adjacency.get(a).get(b) || 0) + 1);
+      adjacency.get(b).set(a, (adjacency.get(b).get(a) || 0) + 1);
+    };
+    
+    if (l.from1 && l.to) addEdge(l.from1, l.to);
+    if (l.from2 && l.to) addEdge(l.from2, l.to);
+    if (!l.from1 && !l.from2) {
+      const a = l.source?.id ?? l.source;
+      const b = l.target?.id ?? l.target ?? l.to;
+      addEdge(a, b);
+    }
+  });
+  
+  // Compute degrees and total weight
+  const degrees = new Map();
+  let m2 = 0; // 2 * total edge weight
+  adjacency.forEach((neighbors, id) => {
+    let d = 0;
+    neighbors.forEach(w => { d += w; });
+    degrees.set(id, d);
+    m2 += d;
+  });
+  
+  if (m2 === 0) return 0;
+  const m = m2 / 2;
+  
+  // Group nodes by community
+  const communities = new Map(); // commId -> [nodeIds]
+  Object.entries(assignments).forEach(([nodeId, commId]) => {
+    if (!communities.has(commId)) communities.set(commId, []);
+    communities.get(commId).push(nodeId);
+  });
+  
+  // Compute modularity
+  let Q = 0;
+  communities.forEach((nodeIds, commId) => {
+    let e_c = 0; // Internal edges (counted once)
+    let a_c = 0; // Sum of degrees
+    
+    nodeIds.forEach(i => {
+      a_c += degrees.get(i) || 0;
+      const neighbors = adjacency.get(i);
+      if (neighbors) {
+        neighbors.forEach((w, j) => {
+          if (assignments[j] === commId && i < j) {
+            // Only count each internal edge once (i < j for undirected)
+            e_c += w;
+          }
+        });
+      }
+    });
+    
+    // Q contribution: e_c/m - (a_c/2m)^2
+    Q += e_c / m - Math.pow(a_c / m2, 2);
+  });
+  
+  return Q;
 }
 
 function computeCommunitiesDirected(nodes, links, params = COMMUNITY_PARAMS) {
@@ -2716,7 +2794,7 @@ function buildCommunityGraph(activeLinks) {
   
   // Count DIRECTED inter-community links
   // Track from->to and to->from separately
-  const edgeWeights = new Map(); // \"fromComm_toComm\" -> count (directed: source_target)
+  const edgeWeights = new Map(); // [fromComm, toComm] -> count (using Map with array keys via JSON)
   
   activeLinks.forEach(link => {
     const { from1, from2, to } = link;
@@ -2731,7 +2809,7 @@ function buildCommunityGraph(activeLinks) {
       if (fromComm === undefined || toComm === undefined || fromComm === toComm) return;
       // Only count if both communities are in our filtered set
       if (!commNodeMap.has(fromComm) || !commNodeMap.has(toComm)) return;
-      const key = `${fromComm}_${toComm}`;
+      const key = JSON.stringify([fromComm, toComm]);
       edgeWeights.set(key, (edgeWeights.get(key) || 0) + 1);
     };
     
@@ -2745,7 +2823,7 @@ function buildCommunityGraph(activeLinks) {
   
   // Create directed edges between communities
   edgeWeights.forEach((weight, key) => {
-    const [fromComm, toComm] = key.split('_');
+    const [fromComm, toComm] = JSON.parse(key);
     const nodeFrom = commNodeMap.get(fromComm);
     const nodeTo = commNodeMap.get(toComm);
     if (nodeFrom && nodeTo) {
@@ -3397,6 +3475,9 @@ onBeforeUnmount(() => {
              communityAlgorithm === 'infomap' ? 'Minimizes random walk description length' :
              communityAlgorithm === 'jlouvain' ? 'Reference implementation (github.com/upphiminn)' :
              'Treats edges as bidirectional' }}
+        </span>
+        <span class="text-xs text-green-600 font-medium" title="Modularity score Q ∈ [-0.5, 1]. Higher values indicate stronger community structure.">
+          Q = {{ communityModularity.toFixed(4) }}
         </span>
       </div>
     </div>
