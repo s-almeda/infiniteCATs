@@ -38,12 +38,16 @@ const renderMode = ref('Combination Nodes');
 const currentLabelHighlight = ref(null);
 const selectedCommunities = ref(new Set());
 const colorMode = ref('communities'); // 'communities' or 'users'
+const timelineBrightness = ref(false); // Scale brightness by timeline position
 const communityAlgorithm = ref('jlouvain'); // 'undirected', 'directed', 'jlouvain', etc.
 const minCommunitySize = ref(1); // Minimum community size for Community Graph view
 const selectedUsers = ref(new Set());
 let userAssignments = {}; // nodeId -> username (first discoverer)
 let userColors = {}; // nodeId -> color string
 let edgeUserMap = {}; // recipeKey -> Set of usernames who traversed this edge
+let nodeDiscoveryIndex = {}; // nodeId -> index (0-based) when node was first discovered
+let linkDiscoveryIndex = {}; // recipeKey -> index when this recipe was first made
+let maxDiscoveryIndex = 0; // Total number of unique discoveries
 const userSummaries = ref([]);
 let expandedNodes = [];
 let expandedLinks = [];
@@ -74,6 +78,85 @@ const COMMUNITY_PARAMS = {
   maxPasses: 50,   // number of local-move sweeps
   minGain: -1e-6   // allow tiny negative to avoid getting stuck
 };
+
+// Compute when each node was first discovered (as a result of a combination)
+function computeDiscoveryIndices(links) {
+  nodeDiscoveryIndex = {};
+  linkDiscoveryIndex = {};
+  maxDiscoveryIndex = 0;
+  
+  // Base materials start at index 0
+  ['Fire', 'Water', 'Earth', 'Air'].forEach(mat => {
+    nodeDiscoveryIndex[mat] = 0;
+  });
+  
+  let discoveryCount = 1; // Start after base materials
+  
+  links.forEach((link, linkIdx) => {
+    const recipeKey = `${link.from1}_${link.from2}_${link.to}`;
+    
+    // Track when each recipe was first made
+    if (linkDiscoveryIndex[recipeKey] === undefined) {
+      linkDiscoveryIndex[recipeKey] = linkIdx;
+    }
+    
+    // Track when each node was first discovered
+    if (nodeDiscoveryIndex[link.to] === undefined) {
+      nodeDiscoveryIndex[link.to] = discoveryCount++;
+    }
+  });
+  
+  maxDiscoveryIndex = discoveryCount;
+  console.log(`Computed discovery indices: ${maxDiscoveryIndex} unique discoveries`);
+}
+
+// Get brightness multiplier (0.2 to 1.0) based on timeline position
+function getTimelineBrightness(nodeId, recipeKey = null) {
+  if (!timelineBrightness.value) return 1.0;
+  
+  // Use link discovery index if available, otherwise node discovery index
+  let idx = 0;
+  if (recipeKey && linkDiscoveryIndex[recipeKey] !== undefined) {
+    // For links, use the link's position in the timeline
+    idx = linkDiscoveryIndex[recipeKey];
+    const maxIdx = originalLinks.length;
+    return 0.2 + 0.8 * (idx / maxIdx);
+  } else if (nodeId && nodeDiscoveryIndex[nodeId] !== undefined) {
+    idx = nodeDiscoveryIndex[nodeId];
+    return 0.2 + 0.8 * (idx / maxDiscoveryIndex);
+  }
+  return 1.0;
+}
+
+// Adjust a color's brightness based on timeline position
+function adjustColorBrightness(color, brightness) {
+  if (brightness >= 1.0) return color;
+  
+  // Parse hex color or use as-is
+  let r, g, b;
+  if (color.startsWith('#')) {
+    const hex = color.slice(1);
+    r = parseInt(hex.slice(0, 2), 16);
+    g = parseInt(hex.slice(2, 4), 16);
+    b = parseInt(hex.slice(4, 6), 16);
+  } else if (color.startsWith('rgb')) {
+    const match = color.match(/\d+/g);
+    if (match && match.length >= 3) {
+      [r, g, b] = match.map(Number);
+    } else {
+      return color;
+    }
+  } else {
+    return color;
+  }
+  
+  // Scale toward darker
+  r = Math.round(r * brightness);
+  g = Math.round(g * brightness);
+  b = Math.round(b * brightness);
+  
+  return `rgb(${r}, ${g}, ${b})`;
+}
 
 function getEmojiFor(id) {
   if (!allNodes) return "";
@@ -197,12 +280,19 @@ function drawLinkograph(nodes, links) {
   links.forEach(link => {
     if (!link.isDuplicate) {
       const isRecipe = link.isRecipe;
-      const linkColor = isRecipe ? null : linkColorFor(link);
+      let linkColor = isRecipe ? null : linkColorFor(link);
       const selectionState = isLinkSelected(link);
       const selectionActive = selectionState !== null;
       const isSelected = selectionState === true;
       
       ctx.strokeStyle = linkColor || (isRecipe ? "#ff0000" : "#888");
+      
+      // Apply timeline brightness to link color
+      if (timelineBrightness.value && !isRecipe) {
+        const brightness = getTimelineBrightness(null, link.recipeKey);
+        ctx.strokeStyle = adjustColorBrightness(ctx.strokeStyle, brightness);
+      }
+      
       ctx.lineWidth = isRecipe ? 2 : (isSelected ? 2 : 1);
       ctx.globalAlpha = selectionActive 
         ? (isSelected ? 0.8 : 0.08)
@@ -245,6 +335,12 @@ function drawLinkograph(nodes, links) {
       nodeColor = (!node.isConnector && userColors[node.id]) ? userColors[node.id] : (node.isConnector ? "#ff9500" : "#219ebc");
     } else {
       nodeColor = (!node.isConnector && communityColors[node.id]) ? communityColors[node.id] : (node.isConnector ? "#ff9500" : "#219ebc");
+    }
+    
+    // Apply timeline brightness to node color
+    if (timelineBrightness.value && !node.isConnector) {
+      const brightness = getTimelineBrightness(node.id);
+      nodeColor = adjustColorBrightness(nodeColor, brightness);
     }
     
     ctx.fillStyle = nodeColor;
@@ -366,6 +462,13 @@ function draw(nodes, links) {
     }
 
     ctx.strokeStyle = isRecipe ? "#ff0000" : (isLabelHi ? "#1e90ff" : (linkColor || "#888"));
+    
+    // Apply timeline brightness to link color
+    if (timelineBrightness.value && !isRecipe && !isLabelHi) {
+      const brightness = getTimelineBrightness(null, l.recipeKey);
+      ctx.strokeStyle = adjustColorBrightness(ctx.strokeStyle, brightness);
+    }
+    
     ctx.lineWidth = (isRecipe || isLabelHi || isSelectedLink) ? 2.2 : 1;
     ctx.globalAlpha = isRecipe ? 0.7 : (isLabelHi ? 0.6 : (selectionActive ? (isSelectedLink ? 0.85 : 0.12) : (linkColor ? 0.5 : 0.3)));
     ctx.beginPath();
@@ -436,6 +539,12 @@ function draw(nodes, links) {
       color = (!n.isConnector && userColors[n.id]) ? userColors[n.id] : (n.type === "combination" ? "#ffb703" : "#219ebc");
     } else {
       color = (!n.isConnector && communityColors[n.id]) ? communityColors[n.id] : (n.type === "combination" ? "#ffb703" : "#219ebc");
+    }
+    
+    // Apply timeline brightness to node color
+    if (timelineBrightness.value && n.type !== "combination") {
+      const brightness = getTimelineBrightness(n.id);
+      color = adjustColorBrightness(color, brightness);
     }
     
     ctx.fillStyle = color;
@@ -3250,6 +3359,9 @@ async function loadGraphData() {
     originalLinks = links;
     allNodes = nodes;
     
+    // Compute discovery indices for timeline brightness
+    computeDiscoveryIndices(originalLinks);
+    
     // Compute communities and assign colors based on selected algorithm
     await recomputeCommunities();
     
@@ -3342,6 +3454,13 @@ watch(colorMode, () => {
   }
 });
 
+// Redraw when timelineBrightness changes
+watch(timelineBrightness, () => {
+  console.log(`Timeline brightness changed to ${timelineBrightness.value}`);
+  if (expandedNodes.length > 0 && expandedLinks.length > 0) {
+    draw(expandedNodes, expandedLinks);
+  }
+});
 // Recompute communities when algorithm changes
 watch(communityAlgorithm, async () => {
   console.log(`Community algorithm changed to ${communityAlgorithm.value}`);
@@ -3453,6 +3572,23 @@ onBeforeUnmount(() => {
           <input type="radio" v-model="colorMode" value="users" class="w-4 h-4" />
           <span class="text-sm">Users</span>
         </label>
+        <span class="border-l border-gray-300 h-5 mx-2"></span>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" v-model="timelineBrightness" class="w-4 h-4" />
+          <span class="text-sm">Timeline Brightness</span>
+        </label>
+        <span class="text-xs text-gray-500">(darker = earlier discoveries)</span>
+      </div>
+    </div>
+    
+    <!-- Timeline Brightness Toggle (shown for logged-in users) -->
+    <div v-if="isLoggedIn" class="w-full max-w-4xl border border-gray-200 rounded-md p-3 bg-white shadow-sm">
+      <div class="flex items-center gap-4">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" v-model="timelineBrightness" class="w-4 h-4" />
+          <span class="text-sm">Timeline Brightness</span>
+        </label>
+        <span class="text-xs text-gray-500">(darker = earlier discoveries)</span>
       </div>
     </div>
 
