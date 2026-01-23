@@ -24,7 +24,7 @@ let ctx;
 let animationFrame;
 
 const width = ref(window.innerWidth - 40);
-const height = ref(600);
+const height = ref(900);
 const storedNodes = ref([]);
 const hoverNode = ref(null);
 const hoverPos = ref({ x: 0, y: 0 });
@@ -41,6 +41,7 @@ const colorMode = ref('communities'); // 'communities' or 'users'
 const timelineBrightness = ref(false); // Scale brightness by timeline position
 const communityAlgorithm = ref('jlouvain'); // 'undirected', 'directed', 'jlouvain', etc.
 const minCommunitySize = ref(1); // Minimum community size for Community Graph view
+const labeledArrowsRepelStrength = ref(200); // Repel force strength for Labeled Arrows mode
 const selectedUsers = ref(new Set());
 let userAssignments = {}; // nodeId -> username (first discoverer)
 let userColors = {}; // nodeId -> color string
@@ -164,6 +165,12 @@ function getEmojiFor(id) {
   return n?.emoji || "";
 }
 
+// Helper to get community name by ID (for display in UI)
+function getCommName(commId) {
+  const comm = communitySummaries.value.find(c => c.id === commId);
+  return comm ? comm.name : `Community ${commId}`;
+}
+
 function layoutLinkograph(nodes) {
   // Position nodes in a horizontal line based on chronological order
   const padding = 50;
@@ -229,7 +236,7 @@ function drawLinkograph(nodes, links) {
   links.forEach(link => {
     if (link.isDuplicate) {
       ctx.strokeStyle = "#666";
-      ctx.lineWidth = 1;
+      ctx.lineWidth = 8;
       ctx.globalAlpha = 0.3;
       
       ctx.beginPath();
@@ -293,7 +300,7 @@ function drawLinkograph(nodes, links) {
         ctx.strokeStyle = adjustColorBrightness(ctx.strokeStyle, brightness);
       }
       
-      ctx.lineWidth = isRecipe ? 2 : (isSelected ? 2 : 1);
+      ctx.lineWidth = 10;
       ctx.globalAlpha = selectionActive 
         ? (isSelected ? 0.8 : 0.08)
         : (isRecipe ? 0.7 : (linkColor ? 0.5 : 0.4));
@@ -345,18 +352,18 @@ function drawLinkograph(nodes, links) {
     
     ctx.fillStyle = nodeColor;
     ctx.globalAlpha = selectionActive ? (isSelected ? 1 : 0.15) : 1;
-    const radius = node.isConnector ? 4 : (isSelected ? 8 : 6);
+    const radius = node.isConnector ? 15 : (isSelected ? 30 : 25);
     ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
     ctx.fill();
     ctx.globalAlpha = 1;
 
     // Draw emoji label (skip for connector nodes)
     if (!node.isConnector) {
-      ctx.font = "16px sans-serif";
+      ctx.font = "24px sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       const emoji = node.emoji || "❓";
-      ctx.fillText(emoji, node.x, node.y - 14);
+      ctx.fillText(emoji, node.x, node.y - 35);
     }
   });
   
@@ -461,7 +468,7 @@ function draw(nodes, links) {
       }
     }
 
-    ctx.strokeStyle = isRecipe ? "#ff0000" : (isLabelHi ? "#1e90ff" : (linkColor || "#888"));
+    ctx.strokeStyle = isRecipe ? "#ff0000" : (isLabelHi ? "#ff14ff" : (linkColor || "#888"));
     
     // Apply timeline brightness to link color
     if (timelineBrightness.value && !isRecipe && !isLabelHi) {
@@ -469,7 +476,7 @@ function draw(nodes, links) {
       ctx.strokeStyle = adjustColorBrightness(ctx.strokeStyle, brightness);
     }
     
-    ctx.lineWidth = (isRecipe || isLabelHi || isSelectedLink) ? 2.2 : 1;
+    ctx.lineWidth = (isRecipe || isLabelHi || isSelectedLink) ? 2.2 : 1.5;
     ctx.globalAlpha = isRecipe ? 0.7 : (isLabelHi ? 0.6 : (selectionActive ? (isSelectedLink ? 0.85 : 0.12) : (linkColor ? 0.5 : 0.3)));
     ctx.beginPath();
     ctx.moveTo(l.source.x, l.source.y);
@@ -502,7 +509,7 @@ function draw(nodes, links) {
     const rightX = baseX + uy * arrowWidth + ux * arrowLen;
     const rightY = baseY - ux * arrowWidth + uy * arrowLen;
 
-    ctx.fillStyle = isRecipe ? "#ff0000" : (isLabelHi ? "#0a4fa3" : "#444");
+    ctx.fillStyle = isRecipe ? "#ff0000" : (isLabelHi ? "#c71585" : "#444");
     ctx.beginPath();
     ctx.moveTo(toX, toY);
     ctx.lineTo(leftX, leftY);
@@ -745,6 +752,7 @@ async function recomputeCommunities() {
   } else {
     communityAssignments = computeCommunities(allNodes, originalLinks, COMMUNITY_PARAMS);
   }
+
   communityColors = assignCommunityColors(communityAssignments);
   communitySummaries.value = buildCommunitySummaries(communityAssignments, communityColors, allNodes, originalLinks);
   
@@ -1777,34 +1785,91 @@ function computeUserAssignments(nodes, links) {
 }
 
 function assignUserColors(assignments) {
-  // Palette avoids bright red/blue to keep recipe/label highlights readable
-  const palette = [
-    '#f4a261', // amber
-    '#6dccb5', // mint
-    '#a4c639', // olive-lime
-    '#8f5fe8', // violet
-    '#d17ba0', // rose
-    '#5ca9a5', // teal
-    '#c7b446', // ochre
-    '#6ab04c', // green
-    '#b86ee0', // purple
-    '#e6b980'  // sand
+  // Generate colors algorithmically ensuring the top users are clearly distinct
+  // Uses hand-picked hues for the first 10, then golden ratio for the rest
+  
+  // HSL to RGB conversion
+  const hslToHex = (h, s, l) => {
+    const hueToRgb = (p, q, t) => {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1/6) return p + (q - p) * 6 * t;
+      if (t < 1/2) return q;
+      if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+      return p;
+    };
+    
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    const r = Math.round(hueToRgb(p, q, h + 1/3) * 255);
+    const g = Math.round(hueToRgb(p, q, h) * 255);
+    const b = Math.round(hueToRgb(p, q, h - 1/3) * 255);
+    
+    return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+  };
+  
+  // Maximally distinct hues for the top 10 users (evenly spaced around color wheel)
+  const top10Hues = [
+    0.00,  // 0: Red
+    0.55,  // 1: Cyan-blue
+    0.30,  // 2: Green
+    0.85,  // 3: Magenta-pink
+    0.15,  // 4: Orange-yellow
+    0.70,  // 5: Blue-violet
+    0.45,  // 6: Teal-cyan
+    0.40,  // 7: Green-cyan
+    0.08,  // 8: Orange
+    0.90,  // 9: Red-magenta
   ];
+  
+  const goldenRatioConjugate = 0.618033988749895;
+  
+  const getColorForIndex = (idx) => {
+    let hue, saturation, lightness;
+    
+    if (idx < 10) {
+      hue = top10Hues[idx];
+      saturation = 0.70;
+      lightness = 0.50;
+    } else {
+      hue = (0.23 + (idx - 10) * goldenRatioConjugate) % 1.0;
+      saturation = 0.55 + ((idx - 10) % 3) * 0.1;
+      lightness = 0.45 + (((idx - 10) + 1) % 3) * 0.1;
+    }
+    
+    return hslToHex(hue, saturation, lightness);
+  };
+
+  // First, count the size of each user's contributions
+  const userSizes = new Map();
+  Object.values(assignments).forEach(userId => {
+    userSizes.set(userId, (userSizes.get(userId) || 0) + 1);
+  });
+  
+  // Sort users by size (largest first) to assign colors by rank
+  const sortedUsers = [...userSizes.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([userId], idx) => ({ userId, colorIndex: idx }));
+  
+  // Build a map from userId to color index (based on size rank)
+  const userToColorIndex = new Map();
+  sortedUsers.forEach(({ userId, colorIndex }) => {
+    userToColorIndex.set(userId, colorIndex);
+  });
 
   const colors = {};
   const userToColor = new Map();
-  let idx = 0;
   Object.entries(assignments).forEach(([nodeId, userId]) => {
     if (!userToColor.has(userId)) {
-      userToColor.set(userId, palette[idx % palette.length]);
-      idx++;
+      const colorIndex = userToColorIndex.get(userId) ?? 0;
+      userToColor.set(userId, getColorForIndex(colorIndex));
     }
     colors[nodeId] = userToColor.get(userId);
   });
   return colors;
 }
 
-function buildUserSummaries(assignments, colors, nodes) {
+function buildUserSummaries(assignments, colors, nodes, links, communityAssignments, communitySummaries) {
   const group = new Map();
   nodes.forEach(n => {
     if (!n || n.type === "combination" || n.isConnector) return;
@@ -1816,13 +1881,52 @@ function buildUserSummaries(assignments, colors, nodes) {
     entry.nodes.push(n);
   });
 
+  // Build community name lookup
+  const commNameMap = new Map();
+  if (communitySummaries) {
+    communitySummaries.forEach(cs => commNameMap.set(cs.id, cs.name));
+  }
+
+  // Count community contributions per user (how many combinations each user made that resulted in each community)
+  const userCommunityContributions = new Map(); // userId -> Map(commId -> count)
+  group.forEach((_, userId) => {
+    userCommunityContributions.set(userId, new Map());
+  });
+  
+  if (links && communityAssignments) {
+    links.forEach(link => {
+      const { to, username } = link;
+      if (!to || !username) return;
+      if (!group.has(username)) return;
+      
+      const comm = communityAssignments[to];
+      if (comm === undefined) return;
+      
+      const commMap = userCommunityContributions.get(username);
+      commMap.set(comm, (commMap.get(comm) || 0) + 1);
+    });
+  }
+
   return [...group.entries()].map(([userId, { color, nodes }]) => {
     const labels = nodes.slice(0, 5).map(n => n.label || n.id);
+    
+    // Get top 3 communities this user contributed to
+    const commMap = userCommunityContributions.get(userId) || new Map();
+    const topCommunities = [...commMap.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([commId, count]) => ({ 
+        id: commId, 
+        name: commNameMap.get(commId) || `Community ${commId}`,
+        count 
+      }));
+    
     return {
       id: userId,
       color,
       count: nodes.length,
-      labels
+      labels,
+      topCommunities
     };
   }).sort((a, b) => b.count - a.count);
 }
@@ -1842,27 +1946,87 @@ function onUserToggle(userId, checked) {
 }
 
 function assignCommunityColors(assignments) {
-  // Palette avoids bright red/blue to keep recipe/label highlights readable
-  const palette = [
-    '#f4a261', // amber
-    '#6dccb5', // mint
-    '#a4c639', // olive-lime
-    '#8f5fe8', // violet
-    '#d17ba0', // rose
-    '#5ca9a5', // teal
-    '#c7b446', // ochre
-    '#6ab04c', // green
-    '#b86ee0', // purple
-    '#e6b980'  // sand
+  // Generate colors algorithmically ensuring the top 10 communities are clearly distinct
+  // Uses hand-picked hues for the first 10, then golden ratio for the rest
+  
+  // HSL to RGB conversion
+  const hslToHex = (h, s, l) => {
+    const hueToRgb = (p, q, t) => {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1/6) return p + (q - p) * 6 * t;
+      if (t < 1/2) return q;
+      if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+      return p;
+    };
+    
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    const r = Math.round(hueToRgb(p, q, h + 1/3) * 255);
+    const g = Math.round(hueToRgb(p, q, h) * 255);
+    const b = Math.round(hueToRgb(p, q, h - 1/3) * 255);
+    
+    return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+  };
+  
+  // Maximally distinct hues for the top 10 communities (evenly spaced around color wheel)
+  // These are ordered to maximize difference between adjacent indices
+  const top10Hues = [
+    0.00,  // 0: Red
+    0.55,  // 1: Cyan-blue (opposite of red)
+    0.30,  // 2: Green (between red and cyan)
+    0.85,  // 3: Magenta-pink (between cyan and red, other side)
+    0.15,  // 4: Orange-yellow
+    0.70,  // 5: Blue-violet
+    0.08,  // 6: Orange
+    0.90,  // 7: Red-magenta
   ];
+  
+  // Golden ratio for communities beyond top 10
+  const goldenRatioConjugate = 0.618033988749895;
+  
+  const getColorForIndex = (idx) => {
+    let hue, saturation, lightness;
+    
+    if (idx < 8) {
+      // Use pre-selected maximally distinct hues for top 10
+      hue = top10Hues[idx];
+      saturation = 0.70;
+      lightness = 0.50;
+    } else {
+      // Use golden ratio stepping for communities beyond top 10
+      hue = (0.23 + (idx - 10) * goldenRatioConjugate) % 1.0;
+      // Vary saturation and lightness for additional distinction
+      saturation = 0.55 + ((idx - 10) % 3) * 0.1;
+      lightness = 0.45 + (((idx - 10) + 1) % 3) * 0.1;
+    }
+    
+    return hslToHex(hue, saturation, lightness);
+  };
+
+  // First, count the size of each community
+  const communitySizes = new Map();
+  Object.values(assignments).forEach(commId => {
+    communitySizes.set(commId, (communitySizes.get(commId) || 0) + 1);
+  });
+  
+  // Sort communities by size (largest first) to assign colors by rank
+  const sortedCommunities = [...communitySizes.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([commId], idx) => ({ commId, colorIndex: idx }));
+  
+  // Build a map from commId to color index (based on size rank)
+  const commToColorIndex = new Map();
+  sortedCommunities.forEach(({ commId, colorIndex }) => {
+    commToColorIndex.set(commId, colorIndex);
+  });
 
   const colors = {};
   const commToColor = new Map();
-  let idx = 0;
   Object.entries(assignments).forEach(([nodeId, commId]) => {
     if (!commToColor.has(commId)) {
-      commToColor.set(commId, palette[idx % palette.length]);
-      idx++;
+      const colorIndex = commToColorIndex.get(commId) ?? 0;
+      commToColor.set(commId, getColorForIndex(colorIndex));
     }
     colors[nodeId] = commToColor.get(commId);
   });
@@ -1890,6 +2054,31 @@ function buildCommunitySummaries(assignments, colors, nodes, links) {
     if (!firstCreationLink.has(to)) {
       firstCreationLink.set(to, { from1, from2, to });
     }
+  });
+
+  // Count user contributions per community (how many combinations each user made that resulted in this community)
+  const userContributions = new Map(); // commId -> Map(username -> count)
+  group.forEach((_, commId) => {
+    userContributions.set(commId, new Map());
+  });
+  
+  links.forEach(link => {
+    const { to, username } = link;
+    if (!to || !username) return;
+    const comm = assignments[to];
+    if (comm === undefined || !group.has(comm)) return;
+    
+    const userMap = userContributions.get(comm);
+    userMap.set(username, (userMap.get(username) || 0) + 1);
+  });
+
+  // Compute node degrees (incoming + outgoing edges) for naming communities
+  const nodeDegrees = new Map(); // nodeId -> total degree count
+  links.forEach(link => {
+    const { from1, from2, to } = link;
+    if (from1) nodeDegrees.set(from1, (nodeDegrees.get(from1) || 0) + 1);
+    if (from2) nodeDegrees.set(from2, (nodeDegrees.get(from2) || 0) + 1);
+    if (to) nodeDegrees.set(to, (nodeDegrees.get(to) || 0) + 1);
   });
 
   // Compute directed inter-community edge counts
@@ -1935,6 +2124,18 @@ function buildCommunitySummaries(assignments, colors, nodes, links) {
   return [...group.entries()].map(([commId, { color, nodes: commNodes }]) => {
     const labels = commNodes.slice(0, 5).map(n => n.label || n.id);
     
+    // Find the node with the highest degree (most incoming + outgoing edges) to name the community
+    let highestDegreeNode = commNodes[0];
+    let highestDegree = 0;
+    commNodes.forEach(n => {
+      const degree = nodeDegrees.get(n.id) || 0;
+      if (degree > highestDegree) {
+        highestDegree = degree;
+        highestDegreeNode = n;
+      }
+    });
+    const name = highestDegreeNode ? (highestDegreeNode.label || highestDegreeNode.id) : `Community ${commId}`;
+    
     // Compute Freeman Degree Centralization for this community
     const centralization = computeFreemanCentralization(commNodes, links, assignments, commId);
     
@@ -1961,10 +2162,16 @@ function buildCommunitySummaries(assignments, colors, nodes, links) {
     });
     
     let parentCommunities = [];
+    let initialMember = null;
+    let initialMemberIngredients = null;
+    
     // Find the first node that was created (has a creation link)
     for (const node of sortedNodes) {
       const creationLink = firstCreationLink.get(node.id);
       if (creationLink) {
+        initialMember = node.label || node.id;
+        initialMemberIngredients = { from1: creationLink.from1, from2: creationLink.from2 };
+        
         const { from1, from2 } = creationLink;
         const parentComm1 = assignments[from1];
         const parentComm2 = assignments[from2];
@@ -1986,15 +2193,32 @@ function buildCommunitySummaries(assignments, colors, nodes, links) {
       }
     }
     
+    // If no creation link found, the initial member is just the first node chronologically
+    if (!initialMember && sortedNodes.length > 0) {
+      initialMember = sortedNodes[0].label || sortedNodes[0].id;
+    }
+    
+    // Get top 3 users who contributed to this community
+    const userMap = userContributions.get(commId) || new Map();
+    const topUsers = [...userMap.entries()]
+      .filter(([user]) => user !== 'system' && user !== 'unknown')
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([username, count]) => ({ username, count }));
+    
     return {
       id: commId,
+      name,
       color,
       count: commNodes.length,
       labels,
       centralization,
       topSources,
       topSinks,
-      parentCommunities
+      parentCommunities,
+      topUsers,
+      initialMember,
+      initialMemberIngredients
     };
   }).sort((a, b) => b.count - a.count);
 }
@@ -2107,18 +2331,20 @@ function drawCommunityDiscoveryChart() {
   
   const chartCtx = discoveryCanvas.value.getContext('2d');
   const chartWidth = discoveryCanvas.value.width;
+  // Keep original canvas height from template
   const chartHeight = discoveryCanvas.value.height;
-  const padding = { top: 20, right: 20, bottom: 40, left: 50 };
+  // Increase bottom padding to make room for legend below the chart
+  const padding = { top: 20, right: 20, bottom: 200, left: 50 };
   const plotWidth = chartWidth - padding.left - padding.right;
   const plotHeight = chartHeight - padding.top - padding.bottom;
   
   chartCtx.clearRect(0, 0, chartWidth, chartHeight);
   
-  // Get top 10 largest communities
-  const largeCommunities = communitySummaries.value.slice(0, 10);
+  // Get top 8 largest communities
+  const largeCommunities = communitySummaries.value.slice(0, 8);
   if (largeCommunities.length === 0) {
     chartCtx.fillStyle = '#666';
-    chartCtx.font = '14px sans-serif';
+    chartCtx.font = '18px sans-serif';
     chartCtx.textAlign = 'center';
     chartCtx.fillText('No communities to display', chartWidth / 2, chartHeight / 2);
     return;
@@ -2194,7 +2420,7 @@ function drawCommunityDiscoveryChart() {
   
   // Y-axis labels (0%, 50%, 100%)
   chartCtx.fillStyle = '#333';
-  chartCtx.font = '11px sans-serif';
+  chartCtx.font = '14px sans-serif';
   chartCtx.textAlign = 'right';
   chartCtx.textBaseline = 'middle';
   [0, 50, 100].forEach(pct => {
@@ -2220,9 +2446,10 @@ function drawCommunityDiscoveryChart() {
   
   // Y-axis label
   chartCtx.save();
-  chartCtx.translate(12, padding.top + plotHeight / 2);
+  chartCtx.translate(0, padding.top + plotHeight / 2);
   chartCtx.rotate(-Math.PI / 2);
   chartCtx.textAlign = 'center';
+  chartCtx.font = '14px sans-serif';
   chartCtx.fillText('% Discovered', 0, 0);
   chartCtx.restore();
   
@@ -2246,18 +2473,40 @@ function drawCommunityDiscoveryChart() {
     chartCtx.stroke();
   });
   
-  // Draw legend
-  const legendX = padding.left + 10;
-  let legendY = padding.top + 5;
-  chartCtx.font = '10px sans-serif';
+  // Draw legend below the line graph (horizontal wrapping layout)
+  const legendStartX = padding.left;
+  const legendStartY = padding.top + plotHeight + 50;
+  const legendMaxWidth = chartWidth - padding.left - padding.right;
+  const itemGap = 20; // Gap between items
+  const lineHeight = 18;
+  
+  chartCtx.font = '13px sans-serif';
   chartCtx.textAlign = 'left';
   chartCtx.textBaseline = 'middle';
-  largeCommunities.slice(0, 8).forEach(c => {
+  
+  let currentX = legendStartX;
+  let currentY = legendStartY;
+  
+  largeCommunities.forEach(c => {
+    const labelText = `${c.name} (${c.count})`;
+    const textWidth = chartCtx.measureText(labelText).width;
+    const itemWidth = 12 + 4 + textWidth + itemGap; // color box + spacing + text + gap
+    
+    // Wrap to next line if this item would exceed the width
+    if (currentX + itemWidth > legendStartX + legendMaxWidth && currentX > legendStartX) {
+      currentX = legendStartX;
+      currentY += lineHeight;
+    }
+    
+    // Draw color box
     chartCtx.fillStyle = c.color;
-    chartCtx.fillRect(legendX, legendY - 4, 12, 8);
+    chartCtx.fillRect(currentX, currentY - 4, 12, 8);
+    
+    // Draw label
     chartCtx.fillStyle = '#333';
-    chartCtx.fillText(`${c.id} (${c.count})`, legendX + 16, legendY);
-    legendY += 14;
+    chartCtx.fillText(labelText, currentX + 16, currentY);
+    
+    currentX += itemWidth;
   });
 }
 
@@ -3016,7 +3265,7 @@ function drawCommunityGraph(nodes, links) {
     let curveDirection = 0;
     if (hasBidirectional) {
       // Always curve to the right of the direction of travel (clockwise)
-      curveDirection = 1;
+      curveDirection = 0.5;
     }
     
     // Calculate curve control point
@@ -3314,7 +3563,7 @@ function rebuildGraphForTimeline(fullReset = false) {
           })
           .strength(l => (l.isRecipe || (renderMode.value === 'Labeled Arrows' && l.isLabelHighlight)) ? 1.5 : 0.8)
       )
-      .force("charge", forceManyBody().strength(-200))
+      .force("charge", forceManyBody().strength(renderMode.value === 'Labeled Arrows' ? -labeledArrowsRepelStrength.value : -200))
       .force("center", forceCenter(width.value / 2, height.value / 2));
     
     simulation.on("tick", () => {
@@ -3322,6 +3571,8 @@ function rebuildGraphForTimeline(fullReset = false) {
     });
   } else {
     simulation.nodes(expandedNodes);
+    // Update charge force for Labeled Arrows mode
+    simulation.force("charge", forceManyBody().strength(renderMode.value === 'Labeled Arrows' ? -labeledArrowsRepelStrength.value : -200));
     simulation.force("link",
       forceLink(expandedLinks)
         .distance(l => {
@@ -3369,7 +3620,7 @@ async function loadGraphData() {
     if (!isLoggedIn.value) {
       userAssignments = computeUserAssignments(allNodes, originalLinks);
       userColors = assignUserColors(userAssignments);
-      userSummaries.value = buildUserSummaries(userAssignments, userColors, allNodes);
+      userSummaries.value = buildUserSummaries(userAssignments, userColors, allNodes, originalLinks, communityAssignments, communitySummaries.value);
     }
     
     // Draw community discovery chart
@@ -3477,6 +3728,14 @@ watch(minCommunitySize, () => {
   }
 });
 
+// Update repel force when slider changes in Labeled Arrows mode
+watch(labeledArrowsRepelStrength, () => {
+  if (renderMode.value === 'Labeled Arrows' && simulation) {
+    simulation.force("charge", forceManyBody().strength(-labeledArrowsRepelStrength.value));
+    simulation.alpha(0.3).restart();
+  }
+});
+
 // Redraw discovery chart when communities change
 watch(communitySummaries, () => {
   drawCommunityDiscoveryChart();
@@ -3510,8 +3769,16 @@ onBeforeUnmount(() => {
         :style="{ left: `${hoverPos.x + 10}px`, top: `${hoverPos.y + 10}px` }">
         {{ hoverNode }}
       </div>
-      <div class="absolute top-2 right-2 flex gap-2">
+      <div class="absolute top-2 right-2 flex gap-2 items-center">
         <button @click="zoomIn" class="bg-blue-500 text-white px-3 py-1 rounded text-sm hover:bg-blue-600">+</button>
+        <input 
+          type="number" 
+          v-model.number="zoomLevel" 
+          step="0.1" 
+          min="0.1" 
+          max="10"
+          class="w-16 text-sm border border-gray-300 rounded px-2 py-1 text-center"
+        />
         <button @click="resetZoom" class="bg-gray-500 text-white px-3 py-1 rounded text-sm hover:bg-gray-600">Reset</button>
         <button @click="zoomOut" class="bg-blue-500 text-white px-3 py-1 rounded text-sm hover:bg-blue-600">−</button>
       </div>
@@ -3536,6 +3803,18 @@ onBeforeUnmount(() => {
             class="w-20 text-sm border border-gray-300 rounded px-2 py-1"
           />
           <span class="text-xs text-gray-500">Only show communities with at least this many nodes</span>
+        </div>
+        <div v-if="renderMode === 'Labeled Arrows'" class="flex items-center gap-3 mb-3">
+          <label class="text-sm font-medium whitespace-nowrap">Repel Strength: {{ labeledArrowsRepelStrength }}</label>
+          <input 
+            type="range" 
+            v-model.number="labeledArrowsRepelStrength" 
+            min="0" 
+            max="1000" 
+            step="10"
+            class="w-40 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+          />
+          <span class="text-xs text-gray-500">Push nodes apart to reduce clumping</span>
         </div>
         <div class="flex items-center gap-3 mb-3">
           <button
@@ -3640,21 +3919,27 @@ onBeforeUnmount(() => {
             @change="onCommunityToggle(comm.id, $event.target.checked)"
           />
           <span class="inline-block w-4 h-4 rounded-sm border" :style="{ backgroundColor: comm.color }"></span>
-          <span class="font-medium">Community {{ comm.id }}</span>
+          <span class="font-medium">{{ comm.name }}</span>
           <span class="text-gray-500 text-xs">({{ comm.count }} nodes)</span>
           <span class="text-blue-600 text-xs" :title="'Freeman Degree Centralization: measures how centralized the community structure is (0=decentralized, 1=star-shaped)'">Centr: {{ comm.centralization.toFixed(3) }}</span>
           <span class="text-purple-600 text-xs" :title="'Average Euclidean distance from each node to the community centroid (semantic spread)'">Spread: {{ (comm.avgDistToCentroid ?? 0).toFixed(3) }}</span>
           <span class="text-orange-600 text-xs" :title="'Standard deviation of distances to centroid (uniformity of spread)'">±{{ (comm.stdDistToCentroid ?? 0).toFixed(3) }}</span>
           <span class="text-green-600 text-xs" :title="'Maximum distance to centroid (community radius)'">Radius: {{ (comm.maxDistToCentroid ?? 0).toFixed(3) }}</span>
-          <span v-if="comm.parentCommunities && comm.parentCommunities.length > 0" class="text-amber-600 text-xs" :title="'Parent community: the community of the ingredients that created the first resource in this community'">
-            Parent: {{ comm.parentCommunities.join(', ') }}
+          <span v-if="comm.initialMember" class="text-lime-600 text-xs" :title="'Initial member: the first resource discovered that belongs to this community' + (comm.initialMemberIngredients ? ` (${comm.initialMemberIngredients.from1} + ${comm.initialMemberIngredients.from2})` : '')">
+            🌱 {{ comm.initialMember }}<template v-if="comm.initialMemberIngredients"> = {{ comm.initialMemberIngredients.from1 }} + {{ comm.initialMemberIngredients.from2 }}</template>
           </span>
-          <span v-if="comm.topSources && comm.topSources.length > 0" class="text-cyan-600 text-xs" :title="'Top communities that feed into this one (in-degree sources)'">
-            ← From: {{ comm.topSources.map(s => `${s.id}(${s.count})`).join(', ') }}
+          <span v-if="comm.parentCommunities && comm.parentCommunities.length > 0" class="text-amber-600 text-xs" :title="'Parent communities: the communities of the ingredients that created the initial member'">
+            ⬆️ Parents: {{ comm.parentCommunities.map(pid => getCommName(pid)).join(' + ') }}
+          </span>
+          <span v-if="comm.topSources && comm.topSources.length > 0" class="text-cyan-600 text-xs" :title="'Top communities that feed into this one (in-degree sources)'">>
+            ← From: {{ comm.topSources.map(s => `${getCommName(s.id)}(${s.count})`).join(', ') }}
           </span>
           <span v-if="comm.topSinks && comm.topSinks.length > 0" class="text-pink-600 text-xs" :title="'Top communities this one feeds into (out-degree sinks)'">
-            → To: {{ comm.topSinks.map(s => `${s.id}(${s.count})`).join(', ') }}
+            → To: {{ comm.topSinks.map(s => `${getCommName(s.id)}(${s.count})`).join(', ') }}
           </span>
+          <!-- <span v-if="comm.topUsers && comm.topUsers.length > 0" class="text-indigo-600 text-xs" :title="'Top users who contributed combinations to this community'">
+            👤 {{ comm.topUsers.map(u => `${u.username}(${u.count})`).join(', ') }}
+          </span> -->
           <span class="text-gray-700 text-xs">Examples: {{ comm.labels.join(', ') }}</span>
         </div>
       </div>
@@ -3668,7 +3953,7 @@ onBeforeUnmount(() => {
         <div
           v-for="user in userSummaries"
           :key="user.id"
-          class="flex items-center gap-3 text-sm"
+          class="flex items-center gap-3 text-sm flex-wrap"
         >
           <input
             type="checkbox"
@@ -3679,6 +3964,9 @@ onBeforeUnmount(() => {
           <span class="inline-block w-4 h-4 rounded-sm border" :style="{ backgroundColor: user.color }"></span>
           <span class="font-medium">{{ user.id }}</span>
           <span class="text-gray-500 text-xs">({{ user.count }} nodes)</span>
+          <span v-if="user.topCommunities && user.topCommunities.length > 0" class="text-indigo-600 text-xs" :title="'Top communities this user contributed to'">
+            🏘️ {{ user.topCommunities.map(c => `${c.name}(${c.count})`).join(', ') }}
+          </span>
           <span class="text-gray-700 text-xs">Examples: {{ user.labels.join(', ') }}</span>
         </div>
       </div>
@@ -3689,7 +3977,7 @@ onBeforeUnmount(() => {
       <canvas
         ref="discoveryCanvas"
         :width="600"
-        :height="300"
+        :height="500"
         class="w-full"
       />
     </div>
