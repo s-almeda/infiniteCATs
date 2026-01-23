@@ -1907,7 +1907,7 @@ function buildUserSummaries(assignments, colors, nodes, links, communityAssignme
     });
   }
 
-  return [...group.entries()].map(([userId, { color, nodes }]) => {
+  const summaries = [...group.entries()].map(([userId, { color, nodes }]) => {
     const labels = nodes.slice(0, 5).map(n => n.label || n.id);
     
     // Get top 3 communities this user contributed to
@@ -1929,6 +1929,13 @@ function buildUserSummaries(assignments, colors, nodes, links, communityAssignme
       topCommunities
     };
   }).sort((a, b) => b.count - a.count);
+  
+  // Anonymize usernames: assign P1, P2, etc. by order of contributions
+  summaries.forEach((summary, index) => {
+    summary.displayName = `P${index + 1}`;
+  });
+  
+  return summaries;
 }
 
 function onUserToggle(userId, checked) {
@@ -3962,7 +3969,7 @@ onBeforeUnmount(() => {
             @change="onUserToggle(user.id, $event.target.checked)"
           />
           <span class="inline-block w-4 h-4 rounded-sm border" :style="{ backgroundColor: user.color }"></span>
-          <span class="font-medium">{{ user.id }}</span>
+          <span class="font-medium">{{ user.displayName }}</span>
           <span class="text-gray-500 text-xs">({{ user.count }} nodes)</span>
           <span v-if="user.topCommunities && user.topCommunities.length > 0" class="text-indigo-600 text-xs" :title="'Top communities this user contributed to'">
             🏘️ {{ user.topCommunities.map(c => `${c.name}(${c.count})`).join(', ') }}
