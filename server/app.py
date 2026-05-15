@@ -17,7 +17,12 @@ from llm_service import generate_combination
 from models import Material
 
 app = Flask(__name__)
-CORS(app, origins=["https://infinitecat.vercel.app", "https://cats.snailbunny.site", "http://localhost:5173"])
+CORS(app, 
+     origins=["https://infinitecat.vercel.app", "https://cats.snailbunny.site", "http://localhost:5173"],
+     allow_headers=["Content-Type", "Authorization"],
+     methods=["GET", "POST", "OPTIONS"],
+     supports_credentials=True,
+     max_age=3600)
 
 # Database setup
 DB_PATH = os.path.join(os.path.dirname(__file__), 'global.db')
