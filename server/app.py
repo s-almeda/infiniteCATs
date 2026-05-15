@@ -519,6 +519,10 @@ def index():
     # TODO: replace with an info HTML page
     return redirect('https://github.com/s-almeda/infiniteCATs', code=302)
 
+@app.route('/demo', methods=['GET'])
+def demo():
+    return redirect('https://infinitecat.vercel.app/', code=302)
+
 @app.route('/api/materials', methods=['GET'])
 def get_available_materials():
     """Get all discovered materials"""
