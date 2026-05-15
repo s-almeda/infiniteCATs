@@ -321,9 +321,17 @@ def get_material_distance_LA(material1: str, material2: str, material3: str) -> 
     embedding1 = np.frombuffer(result1['embedding'], dtype=np.float32)
     embedding2 = np.frombuffer(result2['embedding'], dtype=np.float32)
     embedding3 = np.frombuffer(result3['embedding'], dtype=np.float32)
-    ab = float(np.linalg.norm(embedding1 - embedding2))
-    ac = float(np.linalg.norm(embedding1 - embedding3))
-    bc = float(np.linalg.norm(embedding2 - embedding3))
+    def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+        dot_product = np.dot(a, b)
+        norm_a = np.linalg.norm(a)
+        norm_b = np.linalg.norm(b)
+        return float(dot_product / (norm_a * norm_b))
+    # ab = float(np.linalg.norm(embedding1 - embedding2))
+    # ac = float(np.linalg.norm(embedding1 - embedding3))
+    # bc = float(np.linalg.norm(embedding2 - embedding3))
+    ab = (1 - cosine_similarity(embedding1, embedding2))/2
+    ac = (1 - cosine_similarity(embedding1, embedding3))/2
+    bc = (1 - cosine_similarity(embedding2, embedding3))/2
     try:
         c = (bc + ac - ab) / 2
         a = ac - c
@@ -417,17 +425,14 @@ def get_nodes_and_edges(username: str | None = None):
     cursor = conn.cursor()
     if username:
         cursor.execute(
-            'SELECT id, firstWord, secondWord, resultName, resultEmoji, perUserRank FROM combinations WHERE username = ? ORDER BY id',
+            'SELECT id, firstWord, secondWord, resultName, resultEmoji, perUserRank, username FROM combinations WHERE username = ? ORDER BY id',
             (username,)
         )
     else:
-        cursor.execute('SELECT id, firstWord, secondWord, resultName, resultEmoji, perUserRank FROM combinations ORDER BY id')
+        cursor.execute('SELECT id, firstWord, secondWord, resultName, resultEmoji, perUserRank, username FROM combinations ORDER BY id')
     rows = cursor.fetchall()
     conn.close()
     
-    # Goal material is always the last combination
-    goal_material = rows[-1]['resultName'] if rows else None
-
     nodes: dict[str, dict] = {}
     edges = []
 
@@ -488,6 +493,7 @@ def get_nodes_and_edges(username: str | None = None):
 
         # Calculate distance between materials and their average
         distancefrom1, distancefrom2, distanceto = get_material_distance_LA(first_word, second_word, result_name)
+        # distancefrom1, distancefrom2, distanceto = (1,1,1)  # placeholder values for now
 
         edges.append({
             'from1': first_word,
@@ -495,34 +501,18 @@ def get_nodes_and_edges(username: str | None = None):
             'to': result_name,
             'distanceFrom1': distancefrom1,
             'distanceFrom2': distancefrom2,
-            'distanceTo': distanceto
+            'distanceTo': distanceto,
+            'username': row['username']
         })
     
-    # Find recipe path to goal material (shortest path with lowest perUserRank)
-    recipe_path = set()
-    if goal_material:
-        def trace_recipe(material, depth):
-            # Base case: stop at base materials
-            if material in base_materials:
-                return
-            if material in recipe_map:
-                comp1, comp2, d = recipe_map[material]
-                if d > depth and depth != -1:
-                    print(f"expected depth to be leq {depth} but got {d} for {material}")
-                recipe_path.add((comp1, comp2, material))
-                trace_recipe(comp1, d - 1)
-                trace_recipe(comp2, d - 1)
-        
-        trace_recipe(goal_material, -1)
-
-    print(f"Fetched {len(nodes)} nodes and {len(edges)} edges for {scope}. Recipe path: {len(recipe_path)} edges")
-    return list(nodes.values()), edges, list(recipe_path)
+    print(f"Fetched {len(nodes)} nodes and {len(edges)} edges for {scope}.")
+    return list(nodes.values()), edges
     
 @app.route('/api/graph', methods=['GET'])
 def get_graph_data():
     username = request.args.get('username')
-    nodes, edges, recipe_path = get_nodes_and_edges(username)
-    return jsonify({'nodes': nodes, 'links': edges, 'recipePath': recipe_path})
+    nodes, edges = get_nodes_and_edges(username)
+    return jsonify({'nodes': nodes, 'links': edges})
 
 @app.route('/', methods=['GET'])
 def get_available_materials():
@@ -612,6 +602,118 @@ def get_user_materials():
     materials = [{'name': row['resultName'], 'emoji': row['resultEmoji']} for row in rows]
     
     return jsonify({'materials': materials})
+
+@app.route('/api/community-embedding-stats', methods=['POST'])
+def get_community_embedding_stats():
+    """
+    Compute embedding statistics for each community.
+    Request: POST /api/community-embedding-stats
+    Body: {"communities": {"Fire": 1, "Water": 1, "Steam": 2, ...}}
+    Response: {"stats": {1: {"avgDistance": 0.42, "stdDistance": 0.15}, 2: {...}}}
+    
+    For each community, computes:
+    - avgDistance: average pairwise cosine distance between all node embeddings
+    - stdDistance: standard deviation of pairwise distances
+    """
+    data = request.get_json()
+    
+    if not data or 'communities' not in data:
+        return jsonify({'error': 'Missing communities parameter'}), 400
+    
+    communities = data['communities']  # {materialName: communityId}
+    
+    # Group materials by community
+    comm_to_materials = {}
+    for material_name, comm_id in communities.items():
+        comm_id_str = str(comm_id)  # JSON keys are strings
+        if comm_id_str not in comm_to_materials:
+            comm_to_materials[comm_id_str] = []
+        comm_to_materials[comm_id_str].append(material_name)
+    
+    # Fetch embeddings for all materials
+    all_materials = list(communities.keys())
+    if not all_materials:
+        return jsonify({'stats': {}})
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    placeholders = ','.join(['?'] * len(all_materials))
+    cursor.execute(f'SELECT name, embedding FROM materials WHERE name IN ({placeholders})', tuple(all_materials))
+    rows = cursor.fetchall()
+    conn.close()
+    
+    # Parse embeddings (stored as float32 BLOBs)
+    embeddings = {}
+    for row in rows:
+        if row['embedding']:
+            try:
+                # Embeddings are stored as raw float32 bytes
+                emb = np.frombuffer(row['embedding'], dtype=np.float32)
+                embeddings[row['name']] = emb
+            except:
+                pass
+    
+    # Compute stats for each community
+    stats = {}
+    all_centroids = {}  # Store for inter-community comparison
+
+    for name, emb in list(embeddings.items())[:5]:
+        print(f"{name}: norm = {np.linalg.norm(emb):.4f}")
+    
+    for comm_id, materials in comm_to_materials.items():
+        # Get embeddings for this community's materials
+        comm_embeddings = [embeddings[m] for m in materials if m in embeddings]
+        
+        if len(comm_embeddings) < 2:
+            stats[comm_id] = {
+                'avgDistToCentroid': 0,
+                'stdDistToCentroid': 0,
+                'maxDistToCentroid': 0,
+                'count': len(comm_embeddings)
+            }
+            if len(comm_embeddings) == 1:
+                all_centroids[comm_id] = comm_embeddings[0]
+            continue
+        
+        # Stack into matrix for easier computation
+        emb_matrix = np.vstack(comm_embeddings)
+        
+        # Compute centroid (mean embedding) and normalize it
+        centroid = np.mean(emb_matrix, axis=0)
+        centroid_norm = centroid / (np.linalg.norm(centroid) + 1e-10)
+        all_centroids[comm_id] = centroid_norm
+        
+        # Cosine distance to centroid (better for normalized embeddings)
+        def cosine_distance(a, b):
+            cos_sim = np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-10)
+            return 1 - cos_sim  # 0 = identical, 1 = orthogonal, 2 = opposite
+        
+        dists_to_centroid = [cosine_distance(emb, centroid_norm) for emb in comm_embeddings]
+        avg_dist_to_centroid = float(np.mean(dists_to_centroid))
+        max_dist_to_centroid = float(np.max(dists_to_centroid))
+        std_dist_to_centroid = float(np.std(dists_to_centroid))
+        
+        stats[comm_id] = {
+            'avgDistToCentroid': avg_dist_to_centroid,  # avg cosine distance to center (main spread measure)
+            'stdDistToCentroid': std_dist_to_centroid,  # uniformity of spread
+            'maxDistToCentroid': max_dist_to_centroid,  # "radius" of community
+            'count': len(comm_embeddings)
+        }
+    
+    # Compute inter-community distances (how separated are communities?)
+    avg_inter_community_dist = 0
+    if len(all_centroids) >= 2:
+        centroid_list = list(all_centroids.values())
+        inter_dists = []
+        for i in range(len(centroid_list)):
+            for j in range(i + 1, len(centroid_list)):
+                # Cosine distance between centroids
+                cos_sim = np.dot(centroid_list[i], centroid_list[j]) / (np.linalg.norm(centroid_list[i]) * np.linalg.norm(centroid_list[j]) + 1e-10)
+                inter_dists.append(1 - cos_sim)
+        avg_inter_community_dist = float(np.mean(inter_dists))
+    
+    return jsonify({'stats': stats, 'avgInterCommunityDistance': avg_inter_community_dist})
 
 if __name__ == '__main__':
     init_db()
