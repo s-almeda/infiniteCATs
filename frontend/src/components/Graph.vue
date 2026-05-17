@@ -2669,6 +2669,263 @@ function resetZoom() {
   panY.value = 0;
 }
 
+function escapeXml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function exportSvg() {
+  if (!expandedNodes.length) {
+    console.warn('SVG export skipped: graph is not ready yet');
+    return;
+  }
+
+  const logicalWidth = width.value;
+  const logicalHeight = height.value;
+  const safeMode = (renderMode.value || 'graph').toLowerCase().replace(/\s+/g, '-');
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const centerX = logicalWidth / 2;
+  const centerY = logicalHeight / 2;
+  const rootTransform = `translate(${panX.value + centerX} ${panY.value + centerY}) scale(${zoomLevel.value}) translate(${-centerX} ${-centerY})`;
+
+  const nodeSelectionState = (nodeId) => {
+    if (colorMode.value === 'users' && !isLoggedIn.value) {
+      const userId = userAssignments[nodeId];
+      return {
+        selectionActive: selectedUsers.value.size > 0,
+        isSelected: userId !== undefined && selectedUsers.value.has(userId)
+      };
+    }
+    const commId = communityAssignments[nodeId];
+    return {
+      selectionActive: selectedCommunities.value.size > 0,
+      isSelected: commId !== undefined && selectedCommunities.value.has(commId)
+    };
+  };
+
+  const linkColorFor = (link) => {
+    const src = link.source?.id ?? link.source;
+    const tgt = link.target?.id ?? link.target;
+    if (!src || !tgt) return null;
+
+    if (colorMode.value === 'users' && !isLoggedIn.value) {
+      const srcUser = userAssignments[src];
+      const tgtUser = userAssignments[tgt];
+      if (srcUser !== undefined && tgtUser !== undefined && srcUser === tgtUser) return userColors[src];
+      if (srcUser !== undefined && tgtUser === undefined) return userColors[src];
+      if (tgtUser !== undefined && srcUser === undefined) return userColors[tgt];
+      return null;
+    }
+
+    const srcComm = communityAssignments[src];
+    const tgtComm = communityAssignments[tgt];
+    if (srcComm !== undefined && tgtComm !== undefined && srcComm === tgtComm) return communityColors[src];
+    if (srcComm !== undefined && tgtComm === undefined) return communityColors[src];
+    if (tgtComm !== undefined && srcComm === undefined) return communityColors[tgt];
+    return null;
+  };
+
+  const linkSelectedState = (link) => {
+    const src = link.source?.id ?? link.source;
+    const tgt = link.target?.id ?? link.target;
+
+    if (colorMode.value === 'users' && !isLoggedIn.value) {
+      if (selectedUsers.value.size === 0) return null;
+      const srcUser = userAssignments[src];
+      const tgtUser = userAssignments[tgt];
+      const srcSelected = srcUser !== undefined && selectedUsers.value.has(srcUser);
+      const tgtSelected = tgtUser !== undefined && selectedUsers.value.has(tgtUser);
+      let edgeHasSelectedUser = false;
+      if (link.recipeKey && edgeUserMap[link.recipeKey]) {
+        for (const u of selectedUsers.value) {
+          if (edgeUserMap[link.recipeKey].has(u)) {
+            edgeHasSelectedUser = true;
+            break;
+          }
+        }
+      }
+      return srcSelected || tgtSelected || edgeHasSelectedUser;
+    }
+
+    if (selectedCommunities.value.size === 0) return null;
+    const srcComm = communityAssignments[src];
+    const tgtComm = communityAssignments[tgt];
+    const srcSelected = srcComm !== undefined && selectedCommunities.value.has(srcComm);
+    const tgtSelected = tgtComm !== undefined && selectedCommunities.value.has(tgtComm);
+    return srcSelected || tgtSelected;
+  };
+
+  const parts = [];
+  parts.push(`<?xml version="1.0" encoding="UTF-8"?>`);
+  parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${logicalWidth}" height="${logicalHeight}" viewBox="0 0 ${logicalWidth} ${logicalHeight}">`);
+  parts.push(`<defs><marker id="arrowhead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#444"/></marker></defs>`);
+  parts.push(`<g transform="${rootTransform}">`);
+
+  if (renderMode.value === 'Linkograph' || renderMode.value === 'Path Linkography') {
+    expandedLinks.forEach((link) => {
+      if (!link.isDuplicate) return;
+      parts.push(`<line x1="${link.source.x}" y1="${link.source.y}" x2="${link.target.x}" y2="${link.target.y}" stroke="#666" stroke-width="8" opacity="0.3"/>`);
+    });
+
+    expandedLinks.forEach((link) => {
+      if (link.isDuplicate) return;
+      const isRecipe = link.isRecipe;
+      let stroke = linkColorFor(link) || (isRecipe ? '#ff0000' : '#888');
+      if (timelineBrightness.value && !isRecipe) {
+        const brightness = getTimelineBrightness(null, link.recipeKey);
+        stroke = adjustColorBrightness(stroke, brightness);
+      }
+      const selectedState = linkSelectedState(link);
+      const selectionActive = selectedState !== null;
+      const isSelected = selectedState === true;
+      const opacity = selectionActive ? (isSelected ? 0.8 : 0.08) : (isRecipe ? 0.7 : (linkColorFor(link) ? 0.5 : 0.4));
+      parts.push(`<line x1="${link.source.x}" y1="${link.source.y}" x2="${link.target.x}" y2="${link.target.y}" stroke="${stroke}" stroke-width="10" opacity="${opacity}"/>`);
+    });
+
+    expandedNodes.forEach((node) => {
+      const { selectionActive, isSelected } = nodeSelectionState(node.id);
+      let fill;
+      if (colorMode.value === 'users' && !isLoggedIn.value) {
+        fill = (!node.isConnector && userColors[node.id]) ? userColors[node.id] : (node.isConnector ? '#ff9500' : '#219ebc');
+      } else {
+        fill = (!node.isConnector && communityColors[node.id]) ? communityColors[node.id] : (node.isConnector ? '#ff9500' : '#219ebc');
+      }
+      if (timelineBrightness.value && !node.isConnector) {
+        fill = adjustColorBrightness(fill, getTimelineBrightness(node.id));
+      }
+      const radius = node.isConnector ? 15 : (isSelected ? 30 : 25);
+      const opacity = selectionActive ? (isSelected ? 1 : 0.15) : 1;
+      parts.push(`<circle cx="${node.x}" cy="${node.y}" r="${radius}" fill="${fill}" opacity="${opacity}"/>`);
+      if (!node.isConnector) {
+        const emoji = escapeXml(node.emoji || '❓');
+        parts.push(`<text x="${node.x}" y="${node.y - 35}" font-size="24" text-anchor="middle" dominant-baseline="middle">${emoji}</text>`);
+      }
+    });
+  } else if (renderMode.value === 'Community') {
+    const maxCount = Math.max(1, ...expandedNodes.map(n => n.count || 1));
+    const maxWeight = Math.max(1, ...expandedLinks.map(l => l.weight || 1));
+
+    expandedLinks.forEach((link) => {
+      const srcX = link.source.x;
+      const srcY = link.source.y;
+      const tgtX = link.target.x;
+      const tgtY = link.target.y;
+      const widthPx = 1 + ((link.weight || 1) / maxWeight) * 8;
+      const opacity = 0.4 + ((link.weight || 1) / maxWeight) * 0.4;
+      parts.push(`<line x1="${srcX}" y1="${srcY}" x2="${tgtX}" y2="${tgtY}" stroke="rgba(100,100,100,${opacity})" stroke-width="${widthPx}" marker-end="url(#arrowhead)"/>`);
+    });
+
+    expandedNodes.forEach((node) => {
+      const radius = ((node.count || 1) / maxCount) * 55;
+      parts.push(`<circle cx="${node.x}" cy="${node.y}" r="${radius}" fill="${node.color || '#219ebc'}" stroke="#333" stroke-width="2"/>`);
+      parts.push(`<text x="${node.x}" y="${node.y - 6}" fill="#fff" font-size="12" font-weight="700" text-anchor="middle" dominant-baseline="middle">${escapeXml(node.count || 0)}</text>`);
+      const shortExample = escapeXml((node.examples || '').toString().slice(0, 15));
+      parts.push(`<text x="${node.x}" y="${node.y + 8}" fill="#fff" font-size="9" text-anchor="middle" dominant-baseline="middle">${shortExample}</text>`);
+    });
+  } else {
+    expandedLinks.forEach((l) => {
+      const isRecipe = l.isRecipe;
+      const isLabelHi = renderMode.value === 'Labeled Arrows' && l.isLabelHighlight;
+      const srcId = l.source?.id ?? l.source;
+      const tgtId = l.target?.id ?? l.target;
+      const srcState = nodeSelectionState(srcId);
+      const tgtState = nodeSelectionState(tgtId);
+      const selectionActive = srcState.selectionActive;
+
+      let isSelectedLink = srcState.isSelected || tgtState.isSelected;
+      if (colorMode.value === 'users' && !isLoggedIn.value && l.recipeKey && selectedUsers.value.size > 0) {
+        const edgeUsers = edgeUserMap[l.recipeKey];
+        if (edgeUsers) {
+          for (const user of selectedUsers.value) {
+            if (edgeUsers.has(user)) {
+              isSelectedLink = true;
+              break;
+            }
+          }
+        }
+      }
+
+      let stroke = isRecipe ? '#ff0000' : (isLabelHi ? '#ff14ff' : (linkColorFor(l) || '#888'));
+      if (timelineBrightness.value && !isRecipe && !isLabelHi) {
+        stroke = adjustColorBrightness(stroke, getTimelineBrightness(null, l.recipeKey));
+      }
+      const strokeWidth = (isRecipe || isLabelHi || isSelectedLink) ? 2.2 : 1.5;
+      const opacity = isRecipe ? 0.7 : (isLabelHi ? 0.6 : (selectionActive ? (isSelectedLink ? 0.85 : 0.12) : (linkColorFor(l) ? 0.5 : 0.3)));
+
+      parts.push(`<line x1="${l.source.x}" y1="${l.source.y}" x2="${l.target.x}" y2="${l.target.y}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="${opacity}"/>`);
+
+      const fromX = l.source.x;
+      const fromY = l.source.y;
+      const toX = l.target.x;
+      const toY = l.target.y;
+      const dx = toX - fromX;
+      const dy = toY - fromY;
+      const len = Math.hypot(dx, dy) || 1;
+      const ux = dx / len;
+      const uy = dy / len;
+      const arrowLen = 14;
+      const arrowWidth = 8;
+      const pullBack = 30;
+      const baseX = toX - ux * pullBack;
+      const baseY = toY - uy * pullBack;
+      const leftX = baseX - uy * arrowWidth + ux * arrowLen;
+      const leftY = baseY + ux * arrowWidth + uy * arrowLen;
+      const rightX = baseX + uy * arrowWidth + ux * arrowLen;
+      const rightY = baseY - ux * arrowWidth + uy * arrowLen;
+      const fill = isRecipe ? '#ff0000' : (isLabelHi ? '#c71585' : '#444');
+      parts.push(`<polygon points="${toX},${toY} ${leftX},${leftY} ${rightX},${rightY}" fill="${fill}"/>`);
+
+      if (renderMode.value === 'Labeled Arrows' && l.label) {
+        const midX = (fromX + toX) / 2;
+        const midY = (fromY + toY) / 2;
+        const offset = 12;
+        const labelX = midX - uy * offset;
+        const labelY = midY + ux * offset;
+        const emoji = getEmojiFor(l.label);
+        const labelText = escapeXml(emoji ? `${l.label} ${emoji}` : l.label);
+        const color = isRecipe ? '#b00000' : (isLabelHi ? '#003366' : '#222');
+        parts.push(`<text x="${labelX}" y="${labelY}" fill="${color}" font-size="12" text-anchor="middle" dominant-baseline="middle">${labelText}</text>`);
+      }
+    });
+
+    expandedNodes.forEach((n) => {
+      const { selectionActive, isSelected } = nodeSelectionState(n.id);
+      let fill;
+      if (colorMode.value === 'users' && !isLoggedIn.value) {
+        fill = (!n.isConnector && userColors[n.id]) ? userColors[n.id] : (n.type === 'combination' ? '#999999' : '#219ebc');
+      } else {
+        fill = (!n.isConnector && communityColors[n.id]) ? communityColors[n.id] : (n.type === 'combination' ? '#999999' : '#219ebc');
+      }
+      if (timelineBrightness.value && n.type !== 'combination') {
+        fill = adjustColorBrightness(fill, getTimelineBrightness(n.id));
+      }
+      const r = isSelected ? 8 : 6;
+      const opacity = selectionActive ? (isSelected ? 1 : 0.18) : 1;
+      parts.push(`<circle cx="${n.x}" cy="${n.y}" r="${r}" fill="${fill}" opacity="${opacity}"/>`);
+      if (n.type !== 'combination') {
+        const emoji = escapeXml(n.emoji || '❓');
+        parts.push(`<text x="${n.x}" y="${n.y - 14}" font-size="16" text-anchor="middle" dominant-baseline="middle">${emoji}</text>`);
+      }
+    });
+  }
+
+  parts.push('</g></svg>');
+
+  const svgBlob = new Blob([parts.join('')], { type: 'image/svg+xml;charset=utf-8' });
+  const objectUrl = URL.createObjectURL(svgBlob);
+  const a = document.createElement('a');
+  a.href = objectUrl;
+  a.download = `graph-${safeMode}-${timestamp}.svg`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(objectUrl);
+}
+
 function buildPathLinkography(activeLinks) {
   // Create nodes in chronological order (duplicates allowed)
   expandedNodes = [];
@@ -3788,6 +4045,13 @@ onBeforeUnmount(() => {
         />
         <button @click="resetZoom" class="bg-gray-500 text-white px-3 py-1 rounded text-sm hover:bg-gray-600">Reset</button>
         <button @click="zoomOut" class="bg-blue-500 text-white px-3 py-1 rounded text-sm hover:bg-blue-600">−</button>
+        <button
+          @click="exportSvg"
+          class="bg-teal-600 text-white px-3 py-1 rounded text-sm hover:bg-teal-700"
+          title="Export current graph view as SVG"
+        >
+          Export SVG
+        </button>
       </div>
       <div class="absolute bottom-2 left-2 right-2 bg-white border border-gray-300 rounded px-4 py-3 shadow" @wheel.stop @mousedown.stop>
         <div class="flex items-center gap-3 mb-3">
