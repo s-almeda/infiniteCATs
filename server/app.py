@@ -11,13 +11,18 @@ import numpy as np
 # Load environment variables BEFORE importing llm_service
 load_dotenv()
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, redirect, request
 from flask_cors import CORS
 from llm_service import generate_combination
 from models import Material
 
 app = Flask(__name__)
-CORS(app, origins=["https://infinitecat.vercel.app", "https://cats.snailbunny.site", "http://localhost:5173"])
+CORS(app, 
+     origins=["https://infinitecat.vercel.app", "https://cats.snailbunny.site", "http://localhost:5173"],
+     allow_headers=["Content-Type", "Authorization"],
+     methods=["GET", "POST", "OPTIONS"],
+     supports_credentials=True,
+     max_age=3600)
 
 # Database setup
 DB_PATH = os.path.join(os.path.dirname(__file__), 'global.db')
@@ -510,6 +515,15 @@ def get_graph_data():
     return jsonify({'nodes': nodes, 'links': edges})
 
 @app.route('/', methods=['GET'])
+def index():
+    # TODO: replace with an info HTML page
+    return redirect('https://github.com/s-almeda/infiniteCATs', code=302)
+
+@app.route('/demo', methods=['GET'])
+def demo():
+    return redirect('https://infinitecat.vercel.app/', code=302)
+
+@app.route('/api/materials', methods=['GET'])
 def get_available_materials():
     """Get all discovered materials"""
     conn = get_db()
@@ -517,7 +531,7 @@ def get_available_materials():
     cursor.execute('SELECT name, emoji FROM materials ORDER BY name')
     materials = cursor.fetchall()
     conn.close()
-    
+
     return jsonify({
         'materials': [{'name': m['name'], 'emoji': m['emoji']} for m in materials]
     })
