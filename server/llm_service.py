@@ -10,7 +10,7 @@ from cerebras.cloud.sdk import Cerebras
 from models import Material
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'cache.db')
-MODEL = 'llama-3.3-70b'
+MODEL = 'gpt-oss-120b'
 
 # Initialize Cerebras client
 client = Cerebras(api_key=os.environ.get("CEREBRAS_API_KEY"))
