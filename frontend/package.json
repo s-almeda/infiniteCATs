@@ -18,6 +18,7 @@
     "d3-force": "^3.0.0",
     "pinia": "^2.1.7",
     "react-dnd-html5-backend": "^16.0.1",
+    "react-dnd-touch-backend": "^16.0.1",
     "tailwind-merge": "^2.2.1",
     "vue": "^3.4.15",
     "vue-router": "^4.2.5",

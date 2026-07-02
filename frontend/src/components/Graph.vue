@@ -19,6 +19,8 @@ const { combinationCount } = storeToRefs(resourceStore);
 const { username, isLoggedIn } = storeToRefs(userStore);
 const canvas = ref(null);
 const discoveryCanvas = ref(null);
+const graphWrapper = ref(null);
+let resizeObserver;
 let simulation;
 let ctx;
 let animationFrame;
@@ -625,6 +627,7 @@ function screenToCanvasCoords(screenX, screenY) {
 }
 
 function onMouseMove(event) {
+  if (event.isPrimary === false) return; // ignore secondary touches
   if (!storedNodes.value.length) return;
   const rect = canvas.value.getBoundingClientRect();
   const screenX = event.clientX - rect.left;
@@ -2545,6 +2548,7 @@ function handleNodeClick(node) {
 }
 
 function onMouseDown(event) {
+  if (event.isPrimary === false) return; // ignore secondary touches
   if (!storedNodes.value.length) return;
   const rect = canvas.value.getBoundingClientRect();
   const screenX = event.clientX - rect.left;
@@ -2607,6 +2611,7 @@ function onMouseDown(event) {
 }
 
 function onMouseUp(event) {
+  if (event.isPrimary === false) return; // ignore secondary touches
   isPanning = false;
   
   if (draggingNode.value) {
@@ -3907,18 +3912,35 @@ console.log("Graph component module loaded");
 
 onMounted(async () => {
   console.log("Mounting Graph component and loading data...");
-  
-  // Handle window resize
-  const handleResize = () => {
-    width.value = window.innerWidth - 40;
+
+  // Size the canvas to the available container width (not window.innerWidth,
+  // which ignores page padding and misses container-only size changes)
+  const updateWidth = () => {
+    if (graphWrapper.value) {
+      // -2 for the canvas container's left+right border
+      width.value = Math.max(280, graphWrapper.value.clientWidth - 2);
+    }
   };
-  window.addEventListener('resize', handleResize);
-  
+  updateWidth();
+  resizeObserver = new ResizeObserver(updateWidth);
+  if (graphWrapper.value) {
+    resizeObserver.observe(graphWrapper.value);
+  }
+
   await loadGraphData();
-  
-  return () => {
-    window.removeEventListener('resize', handleResize);
-  };
+});
+
+// Redraw when the canvas is resized (changing the width attribute clears it),
+// and pull the simulation toward the new center so nodes don't end up
+// stranded outside the narrower canvas
+watch(width, () => {
+  if (simulation && simulation.force("center")) {
+    simulation.force("center", forceCenter(width.value / 2, height.value / 2));
+    simulation.alpha(0.3).restart();
+  }
+  if (expandedNodes.length > 0) {
+    draw(expandedNodes, expandedLinks);
+  }
 });
 
 // Watch for combination events and reload graph
@@ -4008,17 +4030,21 @@ watch(communitySummaries, () => {
 onBeforeUnmount(() => {
   simulation?.stop();
   cancelAnimationFrame(animationFrame);
+  resizeObserver?.disconnect();
 });
 </script>
 
 <template>
-  <div class="flex flex-col gap-4 items-start">
+  <div ref="graphWrapper" class="flex flex-col gap-4 items-start w-full max-w-full">
+    <!-- Pointer events cover both mouse and touch, so the graph can be
+         panned and nodes dragged on mobile too -->
     <div
-      class="relative inline-block border border-gray-300 rounded-md shadow-sm"
-      @mousemove="onMouseMove"
-      @mouseleave="onMouseLeave"
-      @mousedown="onMouseDown"
-      @mouseup="onMouseUp"
+      class="relative inline-block max-w-full border border-gray-300 rounded-md shadow-sm select-none"
+      @pointermove="onMouseMove"
+      @pointerleave="onMouseLeave"
+      @pointerdown="onMouseDown"
+      @pointerup="onMouseUp"
+      @pointercancel="onMouseUp"
       @wheel="onWheel"
       @contextmenu.prevent
     >
@@ -4026,6 +4052,7 @@ onBeforeUnmount(() => {
         ref="canvas"
         :width="width"
         :height="height"
+        class="block max-w-full touch-none"
       />
       <div
         v-if="hoverNode"
@@ -4033,7 +4060,7 @@ onBeforeUnmount(() => {
         :style="{ left: `${hoverPos.x + 10}px`, top: `${hoverPos.y + 10}px` }">
         {{ hoverNode }}
       </div>
-      <div class="absolute top-2 right-2 flex gap-2 items-center">
+      <div class="absolute top-2 left-2 right-2 flex gap-2 items-center justify-end flex-wrap">
         <button @click="zoomIn" class="bg-blue-500 text-white px-3 py-1 rounded text-sm hover:bg-blue-600">+</button>
         <input 
           type="number" 
@@ -4053,8 +4080,8 @@ onBeforeUnmount(() => {
           Export SVG
         </button>
       </div>
-      <div class="absolute bottom-2 left-2 right-2 bg-white border border-gray-300 rounded px-4 py-3 shadow" @wheel.stop @mousedown.stop>
-        <div class="flex items-center gap-3 mb-3">
+      <div class="absolute bottom-2 left-2 right-2 bg-white border border-gray-300 rounded px-4 py-3 shadow" @wheel.stop @pointerdown.stop @mousedown.stop>
+        <div class="flex items-center gap-3 mb-3 flex-wrap">
           <label class="text-sm font-medium whitespace-nowrap">Render Mode:</label>
           <select v-model="renderMode" class="text-sm border border-gray-300 rounded px-2 py-1">
             <option value="Combination Nodes">Combination Nodes</option>
@@ -4064,7 +4091,7 @@ onBeforeUnmount(() => {
             <option value="Community">Community Graph</option>
           </select>
         </div>
-        <div v-if="renderMode === 'Community'" class="flex items-center gap-3 mb-3">
+        <div v-if="renderMode === 'Community'" class="flex items-center gap-3 mb-3 flex-wrap">
           <label class="text-sm font-medium whitespace-nowrap">Min Community Size:</label>
           <input 
             type="number" 
@@ -4075,7 +4102,7 @@ onBeforeUnmount(() => {
           />
           <span class="text-xs text-gray-500">Only show communities with at least this many nodes</span>
         </div>
-        <div v-if="renderMode === 'Labeled Arrows'" class="flex items-center gap-3 mb-3">
+        <div v-if="renderMode === 'Labeled Arrows'" class="flex items-center gap-3 mb-3 flex-wrap">
           <label class="text-sm font-medium whitespace-nowrap">Repel Strength: {{ labeledArrowsRepelStrength }}</label>
           <input 
             type="range" 
@@ -4113,7 +4140,7 @@ onBeforeUnmount(() => {
     <!-- Color Mode Toggle (only shown for global graph) -->
     <div v-if="!isLoggedIn" class="w-full max-w-4xl border border-gray-200 rounded-md p-3 bg-white shadow-sm">
       <h3 class="text-sm font-semibold mb-2">Color By</h3>
-      <div class="flex items-center gap-4">
+      <div class="flex items-center gap-4 flex-wrap">
         <label class="flex items-center gap-2 cursor-pointer">
           <input type="radio" v-model="colorMode" value="communities" class="w-4 h-4" />
           <span class="text-sm">Communities</span>
@@ -4133,7 +4160,7 @@ onBeforeUnmount(() => {
     
     <!-- Timeline Brightness Toggle (shown for logged-in users) -->
     <div v-if="isLoggedIn" class="w-full max-w-4xl border border-gray-200 rounded-md p-3 bg-white shadow-sm">
-      <div class="flex items-center gap-4">
+      <div class="flex items-center gap-4 flex-wrap">
         <label class="flex items-center gap-2 cursor-pointer">
           <input type="checkbox" v-model="timelineBrightness" class="w-4 h-4" />
           <span class="text-sm">Timeline Brightness</span>
@@ -4144,7 +4171,7 @@ onBeforeUnmount(() => {
 
     <!-- Community Algorithm Selection -->
     <div class="w-full max-w-4xl border border-gray-200 rounded-md p-3 bg-white shadow-sm">
-      <div class="flex items-center gap-3">
+      <div class="flex items-center gap-3 flex-wrap">
         <label class="text-sm font-medium whitespace-nowrap">Community Algorithm:</label>
         <select v-model="communityAlgorithm" class="text-sm border border-gray-300 rounded px-2 py-1">
           <option value="undirected">Louvain (Undirected)</option>

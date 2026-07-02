@@ -17,6 +17,10 @@ export const useBoxesStore = defineStore('counter', () => {
     a: {top: 20, left: 80, title: 'Fire', emoji: '🔥'},
   })
 
+  // Canvas pan offset: boxes store canvas-space coords, the whole layer is
+  // translated by this amount when the user drags the background
+  const pan = reactive({x: 0, y: 0})
+
   function addBox(box: BoxStoreEntry) {
     const randomId = Math.random().toString(36).substr(2, 5)
     boxes[randomId] = box
@@ -26,5 +30,5 @@ export const useBoxesStore = defineStore('counter', () => {
     delete boxes[id]
   }
 
-  return { boxes , removeBox, addBox}
+  return { boxes, pan, removeBox, addBox}
 })

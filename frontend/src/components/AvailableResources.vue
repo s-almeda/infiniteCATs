@@ -27,21 +27,24 @@ const filteredResources = computed(() => {
 })
 
 const handleResourceClick = (title: string, emoji: string) => {
-  // Get container dimensions for centering
-  const containerWidth = window.innerWidth * 0.75 // 75% of viewport (from Container.vue layout)
-  const containerHeight = window.innerHeight * 0.9 // 90% of viewport height
-  
-  // Calculate center position
-  const centerX = containerWidth / 2 - 40 // -40 for half card width
-  const centerY = containerHeight / 2 - 15 // -15 for half card height
-  
-  // Add random offset (±100px)
-  const randomOffsetX = (Math.random() - 0.5) * 200
-  const randomOffsetY = (Math.random() - 0.5) * 200
-  
+  // Center of the visible canvas, converted to canvas-space (undo the pan)
+  const canvas = document.getElementById('game-canvas')
+  const containerWidth = canvas?.clientWidth ?? window.innerWidth * 0.75
+  const containerHeight = canvas?.clientHeight ?? window.innerHeight * 0.9
+  const pan = boxStore.pan
+
+  const centerX = containerWidth / 2 - 40 - pan.x // -40 for half card width
+  const centerY = containerHeight / 2 - 15 - pan.y // -15 for half card height
+
+  // Add random offset (±100px), kept inside the visible canvas
+  const maxOffsetX = Math.min(100, containerWidth / 2 - 60)
+  const maxOffsetY = Math.min(100, containerHeight / 2 - 40)
+  const randomOffsetX = (Math.random() - 0.5) * 2 * maxOffsetX
+  const randomOffsetY = (Math.random() - 0.5) * 2 * maxOffsetY
+
   const finalX = Math.round(centerX + randomOffsetX)
   const finalY = Math.round(centerY + randomOffsetY)
-  
+
   // Add to canvas
   const key = Math.random().toString(36).substring(7)
   boxes.value[key] = {top: finalY, left: finalX, title, emoji}
@@ -49,16 +52,20 @@ const handleResourceClick = (title: string, emoji: string) => {
 </script>
 
 <template>
-  <div class="flex gap-3 flex-wrap pt-3">
+  <div class="pt-3">
     <input v-model="searchTerm" type="text" class="w-full border border-gray-300 rounded-lg px-3 py-2" placeholder="Search resources...">
-    <Resource 
-      v-for="resource in filteredResources" 
-      :key="resource.title" 
-      :title="resource.title"  
-      :emoji="resource.emoji"
-      :isNewDiscovery="resource.isNewDiscovery"
-      @click="handleResourceClick(resource.title, resource.emoji)"
-    ></Resource>
+    <!-- Mobile: single row with horizontal scroll. Desktop: wrapping grid. -->
+    <div class="flex gap-3 pt-3 flex-nowrap overflow-x-auto pb-2 md:flex-wrap md:overflow-x-visible md:pb-0">
+      <Resource
+        v-for="resource in filteredResources"
+        :key="resource.title"
+        class="shrink-0"
+        :title="resource.title"
+        :emoji="resource.emoji"
+        :isNewDiscovery="resource.isNewDiscovery"
+        @click="handleResourceClick(resource.title, resource.emoji)"
+      ></Resource>
+    </div>
   </div>
 </template>
 
