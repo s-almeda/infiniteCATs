@@ -8,12 +8,14 @@ const { username, isLoggedIn } = storeToRefs(userStore)
 
 const participantId = ref('')
 const isDismissed = ref(false)
+const showGraph = ref(false)
 const canStartWithId = computed(() => participantId.value.trim().length > 0)
 
 const startWithId = () => {
   if (canStartWithId.value) {
     isDismissed.value = true
-    window.location.href = `?user=${encodeURIComponent(participantId.value)}`
+    const graphParam = showGraph.value ? '&graph=true' : ''
+    window.location.href = `?user=${encodeURIComponent(participantId.value)}${graphParam}`
   }
 }
 
@@ -56,12 +58,17 @@ const dismissModal = () => {
           To start playing, log in with the participant ID that you were given below.
         </p>
 
-        <input 
+        <input
           v-model="participantId"
-          type="text" 
-          placeholder="Enter participant ID" 
+          type="text"
+          placeholder="Enter participant ID"
           class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
+
+        <label class="flex items-center gap-2 cursor-pointer select-none">
+          <input type="checkbox" v-model="showGraph" class="w-4 h-4" />
+          <span>I am at C&C'26, please show me my graph!</span>
+        </label>
       </div>
 <!-- 
       <p class="mb-4 font-semibold text-gray-700">
