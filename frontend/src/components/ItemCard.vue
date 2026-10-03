@@ -4,6 +4,7 @@ import {ItemTypes} from "@/components/ItemTypes";
 import type { DragItem } from "@/components/interfaces";
 import {useBoxesStore} from "@/stores/useBoxesStore";
 import axios from "axios";
+import {API_BASE} from "@/api";
 import {useResourcesStore} from "@/stores/useResourcesStore";
 import {useUserStore} from "@/stores/useUserStore";
 import {storeToRefs} from "pinia";
@@ -46,15 +47,12 @@ const [collectedProps, drop] = useDrop<DragItem, void, { isOver: boolean }>(() =
         removeBox(droppedId);
       }
       store.boxes[props.id].loading = true
-      
-      const apiUrl = import.meta.env.VITE_FLASK_API_URL || 'http://localhost:3000'
-      
       let resultAnswer = store.boxes[props.id].title
       let resultEmoji = store.boxes[props.id].emoji
       let isDiscovery = false
 
       // Merge items: call backend and update state with result
-      axios.post(`${apiUrl}/`, {
+      axios.post(`${API_BASE}/`, {
         first: store.boxes[props.id].title,
         second: secondTitle,
         username: isLoggedIn.value ? username.value : null

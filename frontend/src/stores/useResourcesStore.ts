@@ -2,6 +2,7 @@ import {ref} from 'vue'
 import {defineStore} from 'pinia'
 import {useLocalStorage} from "@vueuse/core";
 import {useUserStore} from './useUserStore';
+import {API_BASE} from "@/api";
 
 export interface ResourceStoreEntry {
     title: string
@@ -38,8 +39,7 @@ export const useResourcesStore = defineStore('resources', () => {
 
     async function loadUserMaterials(username: string) {
         try {
-            const apiUrl = import.meta.env.VITE_FLASK_API_URL || 'http://localhost:3000'
-            const response = await fetch(`${apiUrl}/api/user-materials?username=${username}`)
+            const response = await fetch(`${API_BASE}/api/user-materials?username=${username}`)
             
             if (!response.ok) {
                 console.error('Failed to load user materials:', response.status)

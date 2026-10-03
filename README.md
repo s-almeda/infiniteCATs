@@ -42,6 +42,8 @@ npm run dev
 ```
 Frontend runs on `http://localhost:5173`
 
+In dev, Vite proxies `/api/*` and `POST /` to the backend on port 3000 (see `frontend/vite.config.ts`). The frontend calls the backend with relative paths by default; set `VITE_FLASK_API_URL` at build time (e.g. `https://cats.shmuh.co`) only when the built frontend is hosted somewhere other than the backend, as on Vercel.
+
 **You now have both processes running.** Open http://localhost:5173 in your browser.
 
 ## Development Guide

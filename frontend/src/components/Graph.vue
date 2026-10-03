@@ -11,6 +11,7 @@ import { useBoxesStore } from "@/stores/useBoxesStore";
 import { useResourcesStore } from "@/stores/useResourcesStore";
 import { useUserStore } from "@/stores/useUserStore";
 import { storeToRefs } from "pinia";
+import { API_BASE } from "@/api";
 
 const boxStore = useBoxesStore();
 const resourceStore = useResourcesStore();
@@ -2302,8 +2303,7 @@ function computeFreemanCentralization(communityNodes, links, assignments, commId
 async function fetchCommunityEmbeddingStats(assignments) {
   // Fetch embedding statistics (avg distance, std) for each community from the backend
   try {
-    const apiUrl = import.meta.env.VITE_FLASK_API_URL || 'http://localhost:3000';
-    const res = await fetch(`${apiUrl}/api/community-embedding-stats`, {
+    const res = await fetch(`${API_BASE}/api/community-embedding-stats`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ communities: assignments })
@@ -3861,13 +3861,12 @@ function rebuildGraphForTimeline(fullReset = false) {
 async function loadGraphData() {
   console.log("Loading graph data...");
   try {
-    const apiUrl = import.meta.env.VITE_FLASK_API_URL || 'http://localhost:3000'
     let query = isLoggedIn.value && username.value
       ? `?username=${encodeURIComponent(username.value)}`
       : '';
     
     // Always fetch full graph - no percentage parameter
-    const res = await fetch(`${apiUrl}/api/graph${query}`);
+    const res = await fetch(`${API_BASE}/api/graph${query}`);
     if (!res.ok) {
       console.error("Failed to fetch graph data:", res.status);
       return;

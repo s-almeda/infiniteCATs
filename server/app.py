@@ -18,7 +18,7 @@ from models import Material
 
 app = Flask(__name__)
 CORS(app, 
-     origins=["https://infinitecat.vercel.app", "https://cats.snailbunny.site", "http://localhost:5173"],
+     origins=["https://infinitecat.vercel.app", "https://cats.snailbunny.site", "https://cats.shmuh.co", "http://localhost:5173"],
      allow_headers=["Content-Type", "Authorization"],
      methods=["GET", "POST", "OPTIONS"],
      supports_credentials=True,
@@ -726,4 +726,5 @@ def get_community_embedding_stats():
 
 if __name__ == '__main__':
     init_db()
-    app.run(debug=True, host='0.0.0.0', port=3000)
+    # Localhost only: nginx is the public entry point. Debug mode comes from FLASK_DEBUG.
+    app.run(host='127.0.0.1', port=3000)
