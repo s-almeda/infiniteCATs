@@ -25,3 +25,5 @@ server/models
 .env.*
 !.env.example
 *.db
+
+figures/
